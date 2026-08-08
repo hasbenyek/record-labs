@@ -443,7 +443,17 @@ fun AlbumScreen(
                                     onClick = {
                                         if (inSelectMode) {
                                             onCheckedChange(song.id !in selection)
-                                        } else if (!isListenTogetherGuest) {
+                                        } else if (isListenTogetherGuest) {
+                                            // Route unconditionally through playQueue() - it now
+                                            // detects the tapped song via LocalAlbumRadio's
+                                            // preloadItem (set to the song at startIndex) and
+                                            // redirects it into "Suggest to Host" instead of
+                                            // playing directly. Reuses the same centralized
+                                            // guest-block/redirect logic as every other screen.
+                                            playerConnection.playQueue(
+                                                LocalAlbumRadio(albumWithSongs, startIndex = index),
+                                            )
+                                        } else {
                                             if (song.id == mediaMetadata?.id) {
                                                 playerConnection.togglePlayPause()
                                             } else {

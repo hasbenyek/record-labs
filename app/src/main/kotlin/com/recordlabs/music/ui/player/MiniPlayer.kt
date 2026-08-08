@@ -964,7 +964,7 @@ private fun LegacyMiniMediaInfo(
     modifier: Modifier = Modifier,
 ) {
     val error by LocalPlayerConnection.current?.error?.collectAsState() ?: remember { mutableStateOf(null) }
-    val cropAlbumArt by rememberPreference(CropAlbumArtKey, true)
+    val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,

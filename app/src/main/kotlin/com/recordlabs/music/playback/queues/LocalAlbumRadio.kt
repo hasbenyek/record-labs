@@ -11,6 +11,7 @@ import com.recordlabs.innertube.models.WatchEndpoint
 import com.recordlabs.music.db.entities.AlbumWithSongs
 import com.recordlabs.music.extensions.toMediaItem
 import com.recordlabs.music.models.MediaMetadata
+import com.recordlabs.music.models.toMediaMetadata
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.withContext
 
@@ -18,7 +19,11 @@ class LocalAlbumRadio(
     private val albumWithSongs: AlbumWithSongs,
     private val startIndex: Int = 0,
 ) : Queue {
-    override val preloadItem: MediaMetadata? = null
+    // Identifies which song was actually tapped to start this queue (song at startIndex), the
+    // same way YouTubeQueue.radio() sets preloadItem to the seed song. Needed so PlayerConnection
+    // .playQueue() can detect "guest tapped a specific song" even for album-row taps, which build
+    // a LocalAlbumRadio rather than a ListQueue.
+    override val preloadItem: MediaMetadata? = albumWithSongs.songs.getOrNull(startIndex)?.toMediaMetadata()
 
     private lateinit var playlistId: String
     private val endpoint: WatchEndpoint

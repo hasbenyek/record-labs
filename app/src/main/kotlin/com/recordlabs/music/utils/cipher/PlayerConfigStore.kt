@@ -68,6 +68,12 @@ object PlayerConfigStore {
     @Volatile
     private var lastForcedAttemptMs = 0L
 
+    // The cooldown protects the config host from repeated misses, but a different missing hash
+    // still needs one recovery attempt. Otherwise one stale/failed refresh can suppress recovery
+    // for every subsequent player generation in the same process.
+    @Volatile
+    private var lastForcedMissingHash: String? = null
+
     // Separate from lastForcedAttemptMs so a stream-rejection refresh (which fires on any 403,
     // including unrelated/expired-URL ones) can never arm a cooldown that blocks the unknown-hash
     // forceRefresh self-heal, or vice versa. They still serialize on refreshMutex (single-flight).
@@ -102,6 +108,12 @@ object PlayerConfigStore {
     // not to delay recovery after a pure network failure (e.g. rotation hit while offline).
     @Volatile
     private var lastAttemptReachedServer = false
+
+    // True when the most recent request was answered with 304. A stale intermediary can
+    // incorrectly reuse an old ETag, so a missing player hash must be able to retry once without
+    // conditional request headers.
+    @Volatile
+    private var lastResponseWasNotModified = false
 
     private val refreshMutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -198,11 +210,28 @@ object PlayerConfigStore {
 
             val now = System.currentTimeMillis()
             if (forcedCooldownActive(now)) {
-                Timber.tag(TAG).d("forceRefresh skipped (cooldown)")
-                return@withLock false
+                if (lastForcedMissingHash == missingHash) {
+                    Timber.tag(TAG).d("forceRefresh skipped (cooldown)")
+                    return@withLock false
+                }
+                lastForcedMissingHash = missingHash
+                Timber.tag(TAG).w("New missing player hash $missingHash during cooldown; forcing unconditional config fetch")
+                fetchAndApplyResetting(
+                    resetCooldown = { lastForcedAttemptMs = 0L },
+                    forceUnconditional = true,
+                )
+                return@withLock mergedConfigs.containsKey(missingHash)
             }
             lastForcedAttemptMs = now
-            fetchAndApplyResetting { lastForcedAttemptMs = 0L }
+            lastForcedMissingHash = missingHash
+            fetchAndApplyResetting(resetCooldown = { lastForcedAttemptMs = 0L })
+            if (!mergedConfigs.containsKey(missingHash) && lastResponseWasNotModified) {
+                Timber.tag(TAG).w("Missing player hash $missingHash after 304; retrying config fetch unconditionally")
+                fetchAndApplyResetting(
+                    resetCooldown = { lastForcedAttemptMs = 0L },
+                    forceUnconditional = true,
+                )
+            }
             mergedConfigs.containsKey(missingHash)
         }
     }
@@ -224,7 +253,15 @@ object PlayerConfigStore {
                 return@withLock false
             }
             lastRejectionAttemptMs = now
-            fetchAndApplyResetting { lastRejectionAttemptMs = 0L }
+            var changed = fetchAndApplyResetting(resetCooldown = { lastRejectionAttemptMs = 0L })
+            if (lastResponseWasNotModified) {
+                Timber.tag(TAG).w("Stream rejection followed by 304; retrying config fetch unconditionally")
+                changed = fetchAndApplyResetting(
+                    resetCooldown = { lastRejectionAttemptMs = 0L },
+                    forceUnconditional = true,
+                )
+            }
+            changed
         }
     }
 
@@ -234,8 +271,11 @@ object PlayerConfigStore {
      * while briefly offline retries on the next trigger instead of waiting out the cooldown.
      * Returns whether the table changed. Must be called with [refreshMutex] held.
      */
-    private fun fetchAndApplyResetting(resetCooldown: () -> Unit): Boolean {
-        val changed = fetchAndApply()
+    private fun fetchAndApplyResetting(
+        resetCooldown: () -> Unit,
+        forceUnconditional: Boolean = false,
+    ): Boolean {
+        val changed = fetchAndApply(forceUnconditional)
         if (!lastAttemptReachedServer) resetCooldown()
         return changed
     }
@@ -259,19 +299,25 @@ object PlayerConfigStore {
      * branch), network exception, or validation failure — keeps the previous map and cache.
      * lastFetchMs is only advanced on 200/304 so transient failures retry on the next trigger.
      */
-    private fun fetchAndApply(): Boolean {
+    private fun fetchAndApply(forceUnconditional: Boolean = false): Boolean {
         lastAttemptReachedServer = false
+        lastResponseWasNotModified = false
         try {
             val etag = readMeta()?.first
             val request = Request.Builder()
                 .url(REMOTE_URL)
                 .header("User-Agent", "Mozilla/5.0")
-                .apply { if (!etag.isNullOrEmpty()) header("If-None-Match", etag) }
+                .apply {
+                    if (!forceUnconditional && !etag.isNullOrEmpty()) {
+                        header("If-None-Match", etag)
+                    }
+                }
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
                 lastAttemptReachedServer = true
                 if (response.code == 304) {
+                    lastResponseWasNotModified = true
                     Timber.tag(TAG).d("Remote configs unchanged (304)")
                     writeMeta(etag.orEmpty(), System.currentTimeMillis())
                     return false

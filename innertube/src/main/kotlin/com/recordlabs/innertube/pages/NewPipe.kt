@@ -140,6 +140,13 @@ object NewPipeUtils {
 }
 
 object NewPipeExtractor {
+    // NewPipeExtractor is the public entry point used by playback. Initialize the shared
+    // downloader here so signature and stream fallbacks work even when NewPipeUtils is never
+    // referenced directly.
+    init {
+        NewPipe.init(NewPipeDownloaderImpl(YouTube.proxy, YouTube.proxyAuth))
+    }
+
     fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
         return try {
             val streamInfo =

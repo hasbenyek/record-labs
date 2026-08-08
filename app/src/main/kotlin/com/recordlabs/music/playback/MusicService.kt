@@ -2032,7 +2032,10 @@ class MusicService :
         automixItems.value = emptyList()
     }
 
-    fun playNext(items: List<MediaItem>) {
+    fun playNext(
+        items: List<MediaItem>,
+        insertAfterMediaId: String? = null,
+    ) {
         // If queue is empty or player is idle, play immediately instead
         if (player.mediaItemCount == 0 || player.playbackState == STATE_IDLE) {
             player.setMediaItems(items)
@@ -2060,7 +2063,18 @@ class MusicService :
             }
         }
 
-        val insertIndex = player.currentMediaItemIndex + 1
+        // By default "play next" means "right after whatever is currently playing" - but callers
+        // that are appending a FIFO chain of items one at a time (e.g. Listen Together suggestions
+        // being approved one by one) can pass the mediaId of the last item they inserted so this
+        // one lands right after it instead of jumping back to currentIndex+1 (which would reverse
+        // the order every time a second item arrives: e.g. suggest X then Y would become [Y, X]).
+        val afterIndex =
+            insertAfterMediaId?.let { id ->
+                (player.currentMediaItemIndex until player.mediaItemCount).firstOrNull { i ->
+                    player.getMediaItemAt(i).mediaId == id
+                }
+            }
+        val insertIndex = (afterIndex?.plus(1)) ?: (player.currentMediaItemIndex + 1)
         val shuffleEnabled = player.shuffleModeEnabled
 
         // Insert items immediately after the current item in the window/index space

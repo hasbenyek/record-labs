@@ -58,6 +58,7 @@ import com.recordlabs.music.LocalPlayerAwareWindowInsets
 import com.recordlabs.music.R
 import com.recordlabs.music.constants.ChipSortTypeKey
 import com.recordlabs.music.constants.CropAlbumArtKey
+import com.recordlabs.music.constants.AnimatedArtworkKey
 import com.recordlabs.music.constants.DefaultOpenTabKey
 import com.recordlabs.music.constants.DensityScale
 import com.recordlabs.music.constants.DensityScaleKey
@@ -152,7 +153,7 @@ fun AppearanceSettings(
     val (enableLandscapeScaling, onEnableLandscapeScalingChange) =
         rememberPreference(
             EnableLandscapeScalingKey,
-            defaultValue = false,
+            defaultValue = true,
         )
     val (selectedThemeColorInt) =
         rememberPreference(
@@ -193,6 +194,11 @@ fun AppearanceSettings(
     val (cropAlbumArt, onCropAlbumArtChange) =
         rememberPreference(
             CropAlbumArtKey,
+            defaultValue = false,
+        )
+    val (animatedArtwork, onAnimatedArtworkChange) =
+        rememberPreference(
+            AnimatedArtworkKey,
             defaultValue = true,
         )
     val (playerBackground, onPlayerBackgroundChange) =
@@ -1240,6 +1246,27 @@ fun AppearanceSettings(
                             )
                         },
                         onClick = { onCropAlbumArtChange(!cropAlbumArt) },
+                    ),
+                    Material3SettingsItem(
+                        icon = painterResource(R.drawable.slow_motion_video),
+                        title = { Text(stringResource(R.string.animated_artwork)) },
+                        description = { Text(stringResource(R.string.animated_artwork_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = animatedArtwork,
+                                onCheckedChange = onAnimatedArtworkChange,
+                                thumbContent = {
+                                    Icon(
+                                        painter = painterResource(
+                                            id = if (animatedArtwork) R.drawable.check else R.drawable.close,
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize),
+                                    )
+                                },
+                            )
+                        },
+                        onClick = { onAnimatedArtworkChange(!animatedArtwork) },
                     ),
                     Material3SettingsItem(
                         icon = painterResource(R.drawable.palette),

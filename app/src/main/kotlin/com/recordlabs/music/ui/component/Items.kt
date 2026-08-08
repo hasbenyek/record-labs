@@ -1461,7 +1461,7 @@ fun ItemThumbnail(
     isSelected: Boolean = false,
     thumbnailRatio: Float = 1f
 ) {
-    val cropAlbumArt by rememberPreference(CropAlbumArtKey, true)
+    val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
     
     Box(
         contentAlignment = Alignment.Center,
@@ -1543,7 +1543,7 @@ fun LocalThumbnail(
     playButtonVisible: Boolean = false,
     thumbnailRatio: Float = 1f
 ) {
-    val cropAlbumArt by rememberPreference(CropAlbumArtKey, true)
+    val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
     
     Box(
         contentAlignment = Alignment.Center,
@@ -1649,7 +1649,7 @@ fun PlaylistThumbnail(
     shape: Shape,
     cacheKey: String? = null
 ) {
-    val cropAlbumArt by rememberPreference(CropAlbumArtKey, true)
+    val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
     
     when (thumbnails.size) {
         0 -> Box(

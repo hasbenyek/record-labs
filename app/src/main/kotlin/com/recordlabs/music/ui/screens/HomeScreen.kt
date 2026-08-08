@@ -802,7 +802,23 @@ fun HomeScreen(
                             .fillMaxWidth()
                             .combinedClickable(
                                 onClick = {
-                                    if (!isListenTogetherGuest) {
+                                    if (isListenTogetherGuest) {
+                                        // Route unconditionally through playQueue() so its
+                                        // centralized redirect turns this into a "Suggest to
+                                        // Host" - including when this is the currently playing
+                                        // song, which would otherwise just togglePlayPause (a
+                                        // no-op for guests, losing the suggestion entirely).
+                                        playerConnection.playQueue(
+                                            if (autoRadioQueue) {
+                                                YouTubeQueue.radio(it.toMediaMetadata())
+                                            } else {
+                                                ListQueue(
+                                                    title = it.title,
+                                                    items = listOf(it.toMediaItem())
+                                                )
+                                            }
+                                        )
+                                    } else {
                                         if (it.id == mediaMetadata?.id) {
                                             playerConnection.togglePlayPause()
                                         } else {
@@ -905,23 +921,24 @@ fun HomeScreen(
                         onClick = {
                             when (item) {
                                 is SongItem -> {
-                                    if (!isListenTogetherGuest) {
-                                        playerConnection.playQueue(
-                                            if (autoRadioQueue) {
-                                                YouTubeQueue(
-                                                    item.endpoint ?: WatchEndpoint(
-                                                        videoId = item.id,
-                                                    ),
-                                                    item.toMediaMetadata(),
-                                                )
-                                            } else {
-                                                ListQueue(
-                                                    title = item.title,
-                                                    items = listOf(item.toMediaItem())
-                                                )
-                                            }
-                                        )
-                                    }
+                                    // No togglePlayPause special-case here, so it's safe to call
+                                    // playQueue() unconditionally - PlayerConnection.playQueue()
+                                    // already redirects guests into "Suggest to Host" internally.
+                                    playerConnection.playQueue(
+                                        if (autoRadioQueue) {
+                                            YouTubeQueue(
+                                                item.endpoint ?: WatchEndpoint(
+                                                    videoId = item.id,
+                                                ),
+                                                item.toMediaMetadata(),
+                                            )
+                                        } else {
+                                            ListQueue(
+                                                title = item.title,
+                                                items = listOf(item.toMediaItem())
+                                            )
+                                        }
+                                    )
                                 }
 
                                 is AlbumItem -> {
@@ -1588,24 +1605,25 @@ fun HomeScreen(
                                                                                     onClick = {
                                                                                         when (item) {
                                                                                             is SongItem -> {
-                                                                                                if (!isListenTogetherGuest) {
-                                                                                                    playerConnection.playQueue(
-                                                                                                        if (autoRadioQueue) {
-                                                                                                            YouTubeQueue(
-                                                                                                                item.endpoint
-                                                                                                                    ?: WatchEndpoint(
-                                                                                                                        videoId = item.id,
-                                                                                                                    ),
-                                                                                                                item.toMediaMetadata(),
-                                                                                                            )
-                                                                                                        } else {
-                                                                                                            ListQueue(
-                                                                                                                title = item.title,
-                                                                                                                items = listOf(item.toMediaItem())
-                                                                                                            )
-                                                                                                        }
-                                                                                                    )
-                                                                                                }
+                                                                                                // No togglePlayPause special-case, so calling
+                                                                                                // playQueue() unconditionally is safe - it already
+                                                                                                // redirects guests into Suggest to Host internally.
+                                                                                                playerConnection.playQueue(
+                                                                                                    if (autoRadioQueue) {
+                                                                                                        YouTubeQueue(
+                                                                                                            item.endpoint
+                                                                                                                ?: WatchEndpoint(
+                                                                                                                    videoId = item.id,
+                                                                                                                ),
+                                                                                                            item.toMediaMetadata(),
+                                                                                                        )
+                                                                                                    } else {
+                                                                                                        ListQueue(
+                                                                                                            title = item.title,
+                                                                                                            items = listOf(item.toMediaItem())
+                                                                                                        )
+                                                                                                    }
+                                                                                                )
                                                                                             }
 
                                                                                             is AlbumItem -> {
@@ -1826,7 +1844,22 @@ fun HomeScreen(
                                                         .width(horizontalLazyGridItemWidth)
                                                         .combinedClickable(
                                                             onClick = {
-                                                                if (!isListenTogetherGuest) {
+                                                                if (isListenTogetherGuest) {
+                                                                    // Unconditional playQueue() call - its centralized
+                                                                    // redirect turns this into a Suggest to Host instead.
+                                                                    playerConnection.playQueue(
+                                                                        if (autoRadioQueue) {
+                                                                            YouTubeQueue.radio(
+                                                                                song!!.toMediaMetadata(),
+                                                                            )
+                                                                        } else {
+                                                                            ListQueue(
+                                                                                title = song!!.title,
+                                                                                items = listOf(song!!.toMediaItem())
+                                                                            )
+                                                                        }
+                                                                    )
+                                                                } else {
                                                                     if (song!!.id == mediaMetadata?.id) {
                                                                         playerConnection.togglePlayPause()
                                                                     } else {
@@ -1882,14 +1915,15 @@ fun HomeScreen(
                                                     navController.navigate("online_playlist/${item.playlist.id.removePrefix("VL")}")
                                                 },
                                                 onSongClick = { song ->
-                                                    if (!isListenTogetherGuest) {
-                                                        playerConnection.playQueue(
-                                                            YouTubeQueue(
-                                                                song.endpoint ?: WatchEndpoint(videoId = song.id),
-                                                                song.toMediaMetadata(),
-                                                            ),
-                                                        )
-                                                    }
+                                                    // No togglePlayPause special-case, so calling playQueue()
+                                                    // unconditionally is safe - it already redirects guests into
+                                                    // Suggest to Host internally.
+                                                    playerConnection.playQueue(
+                                                        YouTubeQueue(
+                                                            song.endpoint ?: WatchEndpoint(videoId = song.id),
+                                                            song.toMediaMetadata(),
+                                                        ),
+                                                    )
                                                 },
                                             )
                                         }
@@ -1945,24 +1979,25 @@ fun HomeScreen(
                                             DailyDiscoverCard(
                                                 dailyDiscover = item,
                                                 onClick = {
-                                                    if (!isListenTogetherGuest) {
-                                                        val song = item.recommendation as? SongItem
-                                                        val mediaMetadata = song?.toMediaMetadata()
-                                                        if (mediaMetadata != null) {
-                                                            playerConnection.playQueue(
-                                                                if (autoRadioQueue) {
-                                                                    YouTubeQueue(
-                                                                        song.endpoint ?: WatchEndpoint(videoId = song.id),
-                                                                        mediaMetadata,
-                                                                    )
-                                                                } else {
-                                                                    ListQueue(
-                                                                        title = song.title,
-                                                                        items = listOf(song.toMediaItem())
-                                                                    )
-                                                                }
-                                                            )
-                                                        }
+                                                    // No togglePlayPause special-case, so calling playQueue()
+                                                    // unconditionally is safe - it already redirects guests into
+                                                    // Suggest to Host internally.
+                                                    val song = item.recommendation as? SongItem
+                                                    val mediaMetadata = song?.toMediaMetadata()
+                                                    if (mediaMetadata != null) {
+                                                        playerConnection.playQueue(
+                                                            if (autoRadioQueue) {
+                                                                YouTubeQueue(
+                                                                    song.endpoint ?: WatchEndpoint(videoId = song.id),
+                                                                    mediaMetadata,
+                                                                )
+                                                            } else {
+                                                                ListQueue(
+                                                                    title = song.title,
+                                                                    items = listOf(song.toMediaItem())
+                                                                )
+                                                            }
+                                                        )
                                                     }
                                                 },
                                                 modifier = Modifier.maskClip(MaterialTheme.shapes.extraLarge),
@@ -2149,7 +2184,22 @@ fun HomeScreen(
                                                         .width(horizontalLazyGridItemWidth)
                                                         .combinedClickable(
                                                             onClick = {
-                                                                if (!isListenTogetherGuest) {
+                                                                if (isListenTogetherGuest) {
+                                                                    // Unconditional playQueue() call - its centralized
+                                                                    // redirect turns this into a Suggest to Host instead.
+                                                                    playerConnection.playQueue(
+                                                                        if (autoRadioQueue) {
+                                                                            YouTubeQueue.radio(
+                                                                                song!!.toMediaMetadata(),
+                                                                            )
+                                                                        } else {
+                                                                            ListQueue(
+                                                                                title = song!!.title,
+                                                                                items = listOf(song!!.toMediaItem())
+                                                                            )
+                                                                        }
+                                                                    )
+                                                                } else {
                                                                     if (song!!.id == mediaMetadata?.id) {
                                                                         playerConnection.togglePlayPause()
                                                                     } else {
@@ -2377,21 +2427,22 @@ fun HomeScreen(
                                                             .width(horizontalLazyGridItemWidth)
                                                             .combinedClickable(
                                                                 onClick = {
-                                                                    if (!isListenTogetherGuest) {
-                                                                        playerConnection.playQueue(
-                                                                            if (autoRadioQueue) {
-                                                                                YouTubeQueue(
-                                                                                    song.endpoint ?: WatchEndpoint(videoId = song.id),
-                                                                                    song.toMediaMetadata(),
-                                                                                )
-                                                                            } else {
-                                                                                ListQueue(
-                                                                                    title = song.title,
-                                                                                    items = listOf(song.toMediaItem())
-                                                                                )
-                                                                            }
-                                                                        )
-                                                                    }
+                                                                    // No togglePlayPause special-case, so calling playQueue()
+                                                                    // unconditionally is safe - it already redirects guests
+                                                                    // into Suggest to Host internally.
+                                                                    playerConnection.playQueue(
+                                                                        if (autoRadioQueue) {
+                                                                            YouTubeQueue(
+                                                                                song.endpoint ?: WatchEndpoint(videoId = song.id),
+                                                                                song.toMediaMetadata(),
+                                                                            )
+                                                                        } else {
+                                                                            ListQueue(
+                                                                                title = song.title,
+                                                                                items = listOf(song.toMediaItem())
+                                                                            )
+                                                                        }
+                                                                    )
                                                                 },
                                                                 onLongClick = {
                                                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)

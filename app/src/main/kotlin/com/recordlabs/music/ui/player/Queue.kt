@@ -502,7 +502,18 @@ fun Queue(
                                                 onClick = {
                                                     if (inSelectMode) {
                                                         onCheckedChange(window.mediaItem.mediaId !in selection)
-                                                    } else if (!isListenTogetherGuest) {
+                                                    } else if (isListenTogetherGuest) {
+                                                        // This screen jumps within the already-
+                                                        // loaded queue directly (seekToDefaultPosition)
+                                                        // rather than calling playerConnection
+                                                        // .playQueue(), so it bypasses the centralized
+                                                        // guest redirect there entirely. Reuse the same
+                                                        // onGuestSongTapped hook directly instead of
+                                                        // duplicating the Suggest to Host logic here.
+                                                        window.mediaItem.metadata?.let {
+                                                            playerConnection.onGuestSongTapped?.invoke(it)
+                                                        }
+                                                    } else {
                                                         if (index == currentWindowIndex) {
                                                             if (isCasting) {
                                                                 if (castIsPlaying) {

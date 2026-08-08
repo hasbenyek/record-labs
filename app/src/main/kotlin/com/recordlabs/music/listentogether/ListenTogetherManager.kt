@@ -32,8 +32,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -103,6 +106,13 @@ class ListenTogetherManager
 
         // Track if a buffer-complete arrived before the pending sync was ready
         private var bufferCompleteReceivedForTrack: String? = null
+
+        // Media ID of the most recently host-side-inserted guest suggestion. New approved
+        // suggestions are inserted right after this one (FIFO: A, X, Y, Z) instead of each one
+        // jumping to currentIndex+1 (which would reverse the order to A, Z, Y, X). Self-heals if
+        // stale (track played past, removed, etc.) by falling back to currentIndex+1 - see
+        // MusicService.playNext's insertAfterMediaId lookup.
+        private var lastSuggestionMediaId: String? = null
 
         // Expose client state
         val connectionState = client.connectionState
@@ -280,6 +290,7 @@ class ListenTogetherManager
                     playerListenerRegistered = false
                 }
                 oldConnection?.shouldBlockPlaybackChanges = null
+                oldConnection?.onGuestSongTapped = null
                 oldConnection?.onSkipPrevious = null
                 oldConnection?.onSkipNext = null
                 oldConnection?.onRestartSong = null
@@ -290,6 +301,21 @@ class ListenTogetherManager
                 connection?.shouldBlockPlaybackChanges = {
                     // Block if we're in a room as a guest (not host)
                     isInRoom && !isHost
+                }
+
+                // When a blocked guest taps a song directly, suggest it to the host instead of
+                // just doing nothing - reuses the exact same flow as the "Suggest to Host" menu
+                // action (SongMenu.kt / YouTubeSongMenu.kt), just triggered from a tap instead of
+                // a long-press menu item.
+                connection?.onGuestSongTapped = { metadata ->
+                    try {
+                        if (isInRoom && !isHost) {
+                            Timber.tag(TAG).d("Guest tapped song, suggesting to host: ${metadata.title}")
+                            suggestTrack(metadata.toSuggestionTrackInfo())
+                        }
+                    } catch (e: Exception) {
+                        Timber.tag(TAG).e(e, "Error suggesting tapped song to host")
+                    }
                 }
 
                 // Add listener if in room
@@ -434,22 +460,64 @@ class ListenTogetherManager
                         lastSyncedTrackId = player?.currentMediaItem?.mediaId
 
                         // If there's already a track loaded, send it to the server
-                        player?.currentMetadata?.let { metadata ->
-                            Timber.tag(TAG).d("Room created with existing track: ${metadata.title}")
+                        val existingMetadata = player?.currentMetadata
+                        if (existingMetadata != null) {
+                            Timber.tag(TAG).d("Room created with existing track: ${existingMetadata.title}")
                             // Send track change so server has the current track info
-                            sendTrackChangeInternal(metadata)
+                            sendTrackChangeInternal(existingMetadata)
                             // If host is already playing, send PLAY with current position (after delay)
                             val isPlaying = player.playWhenReady
                             if (isPlaying) {
                                 lastSyncedIsPlaying = true
                                 val position = player.currentPosition
-                                val trackId = metadata.id
+                                val trackId = existingMetadata.id
                                 Timber.tag(TAG).d("Host already playing on room create, sending PLAY at $position (with delay)")
                                 // CRITICAL: Add delay to let server process track change first
                                 scope.launch {
                                     delay(150) // 150ms delay for server processing
                                     if (isHost && isInRoom) {
                                         client.sendPlaybackAction(PlaybackActions.PLAY, trackId = trackId, position = position)
+                                    }
+                                }
+                            }
+                        } else if (player?.currentMediaItem != null) {
+                            // A track IS loaded (e.g. playback resumed from a restored/persisted
+                            // MediaSession after the service was killed and recreated), but its
+                            // MediaItem.tag-backed metadata hasn't attached yet - tags don't always
+                            // survive session restoration. Silently skipping here used to mean the
+                            // server (and thus every guest) never learned about this first track at
+                            // all: the NEXT natural onMediaItemTransition (i.e. the second song)
+                            // would become the first CHANGE_TRACK ever sent, so guests would see the
+                            // second song as "now playing" while the host was still on the first one.
+                            // Wait for metadata to become available instead of giving up.
+                            val loadedTrackId = player.currentMediaItem?.mediaId
+                            Timber
+                                .tag(TAG)
+                                .w("Room created but currentMetadata is null for loaded track $loadedTrackId; waiting for metadata")
+                            scope.launch {
+                                val metadata =
+                                    withTimeoutOrNull(5000L) {
+                                        connection
+                                            ?.mediaMetadata
+                                            ?.filterNotNull()
+                                            ?.first { it.id == loadedTrackId }
+                                    }
+                                if (metadata == null) {
+                                    Timber
+                                        .tag(TAG)
+                                        .w("Timed out waiting for metadata after room create; server has no initial track yet")
+                                    return@launch
+                                }
+                                if (!isHost || !isInRoom) return@launch
+                                Timber.tag(TAG).d("Metadata became available after room create: ${metadata.title}")
+                                sendTrackChangeInternal(metadata)
+                                val currentPlayer = playerConnection?.player
+                                if (currentPlayer?.playWhenReady == true) {
+                                    lastSyncedIsPlaying = true
+                                    val position = currentPlayer.currentPosition
+                                    delay(150)
+                                    if (isHost && isInRoom) {
+                                        client.sendPlaybackAction(PlaybackActions.PLAY, trackId = metadata.id, position = position)
                                     }
                                 }
                             }
@@ -749,6 +817,7 @@ class ListenTogetherManager
             bufferingTrackId = null
             isSyncing = false
             bufferCompleteReceivedForTrack = null
+            lastSuggestionMediaId = null
             lastRole = RoomRole.NONE
             lastSyncActionTime = 0L // Reset sync debouncing
             ++currentTrackGeneration // Increment to invalidate any pending track-change coroutines
@@ -1156,14 +1225,36 @@ class ListenTogetherManager
                                                 )?.toMediaItem()
                                         if (mediaItem != null) {
                                             launch(Dispatchers.Main) {
-                                                // Allow internal sync to bypass guest restrictions
-                                                connection.allowInternalSync = true
-                                                if (action.insertNext == true) {
-                                                    connection.playNext(mediaItem)
-                                                } else {
-                                                    connection.addToQueue(mediaItem)
+                                                // This runs as a fire-and-forget child coroutine -
+                                                // an uncaught exception here is isolated to this
+                                                // Job by the SupervisorJob-rooted `scope`, but is
+                                                // NOT caught by handlePlaybackSync's try/catch
+                                                // (that frame already returned once launch() fired)
+                                                // and would otherwise crash silently with no log
+                                                // and no visible symptom other than "nothing
+                                                // happened". Wrap explicitly so a failure here is
+                                                // at least visible and doesn't take anything else
+                                                // down with it.
+                                                try {
+                                                    // Allow internal sync to bypass guest restrictions
+                                                    connection.allowInternalSync = true
+                                                    if (action.insertNext == true) {
+                                                        // Chain this suggestion after the previous
+                                                        // one (if any) instead of always inserting
+                                                        // right after the currently-playing track -
+                                                        // keeps suggestions in FIFO order: A, X, Y, Z
+                                                        // instead of each new one jumping ahead to
+                                                        // A, Z, Y, X.
+                                                        connection.playNext(mediaItem, insertAfterMediaId = lastSuggestionMediaId)
+                                                        lastSuggestionMediaId = mediaItem.mediaId
+                                                    } else {
+                                                        connection.addToQueue(mediaItem)
+                                                    }
+                                                } catch (e: Exception) {
+                                                    Timber.tag(TAG).e(e, "QUEUE_ADD failed to apply media item for ${track.id}")
+                                                } finally {
+                                                    connection.allowInternalSync = false
                                                 }
-                                                connection.allowInternalSync = false
                                             }
                                         } else {
                                             Timber.tag(TAG).w("QUEUE_ADD failed to resolve media item for ${track.id}")
@@ -1208,6 +1299,9 @@ class ListenTogetherManager
                             Timber.tag(TAG).d("Guest: QUEUE_CLEAR removing $itemsAfter items after current")
                             player.removeMediaItems(currentIndex + 1, count - (currentIndex + 1))
                         }
+                        // Whatever suggestion chain existed is gone now; next suggestion should
+                        // restart right after the currently-playing track.
+                        lastSuggestionMediaId = null
                     }
 
                     PlaybackActions.SYNC_QUEUE -> {
@@ -1256,10 +1350,19 @@ class ListenTogetherManager
                                             .d("SYNC_QUEUE: aligning to host current index=$hostIdx from room state")
                                         player.setMediaItems(mediaItems, hostIdx, hostPos)
                                     } else {
+                                        // We genuinely don't know which track in this queue is the
+                                        // host's current one (own player has no match and roomState
+                                        // is stale/unknown). Blindly defaulting to index 0 used to
+                                        // pick whatever track happens to be first in the list - which
+                                        // is NOT necessarily "now playing" (getQueueWindows() keeps
+                                        // already-played history before the current track), so guests
+                                        // could end up seeing an old or upcoming song presented as
+                                        // current instead of the host's actual track. Ask the server
+                                        // for an authoritative resync instead of guessing.
                                         Timber
                                             .tag(TAG)
-                                            .w("SYNC_QUEUE: host current track not in queue; defaulting to start")
-                                        player.setMediaItems(mediaItems, 0, 0L)
+                                            .w("SYNC_QUEUE: host current track not identifiable; requesting fresh sync instead of guessing")
+                                        client.requestSync()
                                     }
                                 }
                                 connection.allowInternalSync = false
@@ -1789,6 +1892,21 @@ class ListenTogetherManager
         private fun stopQueueSyncObservation() {
             queueObserverJob?.cancel()
             queueObserverJob = null
+        }
+
+        // Same field mapping as sendTrackChangeInternal()/toTrackInfo() above, minus the
+        // suggestedBy passthrough (a guest-originated suggestion has no prior "suggested by" to
+        // carry over).
+        private fun MediaMetadata.toSuggestionTrackInfo(): TrackInfo {
+            val durationMs = if (duration > 0) duration.toLong() * 1000 else 180000L
+            return TrackInfo(
+                id = id,
+                title = title,
+                artist = artists.joinToArtistString(getArtistSeparator(context)) { it.name },
+                album = album?.title,
+                duration = durationMs,
+                thumbnail = thumbnailUrl,
+            )
         }
 
         private fun TrackInfo.toMediaMetadata(): MediaMetadata =

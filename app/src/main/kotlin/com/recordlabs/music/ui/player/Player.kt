@@ -19,7 +19,11 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -38,7 +42,9 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -50,6 +56,7 @@ import androidx.compose.foundation.layout.add
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
@@ -93,6 +100,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -197,7 +207,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.max
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import com.recordlabs.music.ui.component.Icon as MIcon
 import com.recordlabs.music.constants.SleepTimerDefaultKey
 import com.recordlabs.music.constants.SleepTimerFadeOutKey
@@ -228,7 +240,7 @@ fun BottomSheetPlayer(
         )
     val (hidePlayerThumbnail, onHidePlayerThumbnailChange) = rememberPreference(HidePlayerThumbnailKey, false)
     val (hideStatusBarOnFullscreen) = rememberPreference(HideStatusBarOnFullscreenKey, false)
-    val cropAlbumArt by rememberPreference(CropAlbumArtKey, true)
+    val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
 
     var showInlineLyrics by rememberSaveable {
         mutableStateOf(false)
@@ -830,6 +842,11 @@ fun BottomSheetPlayer(
     // always stay visible there), and restarts on every touch - including drags, not just the
     // initial press - so it doesn't fire out from under an ongoing interaction.
     val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // Use the smaller dimension so a phone remains a phone after rotation.
+    // screenWidthDp alone becomes large in landscape and incorrectly selects
+    // the tablet/WSA layout.
+    val isCompactPhone = minOf(configuration.screenWidthDp, configuration.screenHeightDp) < 600
     LaunchedEffect(isFullScreen, showInlineLyrics, lastTouchTime, queueSheetState.isExpanded, configuration.orientation) {
         if (!isFullScreen &&
             showInlineLyrics &&
@@ -867,6 +884,15 @@ fun BottomSheetPlayer(
         }
 
     val backgroundAlpha = state.progress.coerceIn(0f, 1f)
+    val backgroundRotation by rememberInfiniteTransition(label = "playerBackgroundMotion").animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 16000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "playerBackgroundRotation",
+    )
 
     BottomSheet(
         state = state,
@@ -889,20 +915,49 @@ fun BottomSheetPlayer(
                         ) { thumbnailUrl ->
                             if (thumbnailUrl != null) {
                                 Box(modifier = Modifier.alpha(backgroundAlpha)) {
+                                    val blurModel = ImageRequest
+                                        .Builder(context)
+                                        .data(thumbnailUrl)
+                                        .size(100, 100)
+                                        .allowHardware(false)
+                                        .build()
+                                    val angle = Math.toRadians(backgroundRotation.toDouble())
+
+                                    // Static full-screen blur guarantees that animated layers can
+                                    // never reveal the dark sheet background at their edges.
                                     AsyncImage(
-                                        model =
-                                            ImageRequest
-                                                .Builder(context)
-                                                .data(thumbnailUrl)
-                                                .size(100, 100)
-                                                .allowHardware(false)
-                                                .build(),
+                                        model = blurModel,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .blur(if (useDarkTheme) 150.dp else 100.dp),
+                                    )
+
+                                    // Several very soft copies of the artwork move in different
+                                    // directions. After the heavy blur, only the color fields are
+                                    // perceived, producing the abstract Apple Music-like motion.
+                                    AsyncImage(
+                                        model = blurModel,
                                         contentDescription = null,
                                         contentScale = ContentScale.Crop,
                                         modifier =
                                             Modifier
                                                 .fillMaxSize()
-                                                .blur(if (useDarkTheme) 150.dp else 100.dp),
+                                                .graphicsLayer {
+                                                    translationX = (sin(angle) * 58f).toFloat()
+                                                    translationY = (cos(angle) * 42f).toFloat()
+                                                    rotationZ = backgroundRotation
+                                                    val pulse = (sin(angle) * 0.04f).toFloat()
+                                                    // Overscan is intentionally generous so a full
+                                                    // 360-degree rotation never exposes black corners
+                                                    // on either portrait or landscape screens.
+                                                    scaleX = 2.8f + pulse
+                                                    scaleY = 2.8f + pulse
+                                                }
+                                                // The static layer already provides the heavy blur;
+                                                // keep the moving layer lighter to reduce GPU work.
+                                                .blur(if (useDarkTheme) 60.dp else 40.dp),
                                     )
                                     Box(
                                         modifier =
@@ -973,7 +1028,90 @@ fun BottomSheetPlayer(
             )
         },
     ) {
+        val lyricsTransportControls: @Composable (Boolean) -> Unit = { compact ->
+            LyricsPageBottomControls(
+                isPlaying = effectiveIsPlaying,
+                canSkipPrevious = canSkipPrevious && (!isListenTogetherGuest || isGuestWithControl),
+                canSkipNext = canSkipNext && (!isListenTogetherGuest || isGuestWithControl),
+                iconColor = TextBackgroundColor,
+                onPrevious = {
+                    if (isGuestWithControl) listenTogetherManager?.sendGuestCommand(PlaybackActions.SKIP_PREV)
+                    else playerConnection.seekToPrevious()
+                },
+                onNext = {
+                    if (isGuestWithControl) listenTogetherManager?.sendGuestCommand(PlaybackActions.SKIP_NEXT)
+                    else playerConnection.seekToNext()
+                },
+                onPlayPause = {
+                    if (isListenTogetherGuest && !isGuestWithControl) {
+                        playerConnection.toggleMute()
+                    } else if (isGuestWithControl) {
+                        listenTogetherManager?.sendGuestCommand("TOGGLE_PLAY")
+                    } else if (isCasting) {
+                        if (castIsPlaying) castHandler?.pause() else castHandler?.play()
+                    } else if (playbackState == STATE_ENDED) {
+                        playerConnection.player.seekTo(0, 0)
+                        playerConnection.player.playWhenReady = true
+                    } else {
+                        playerConnection.togglePlayPause()
+                    }
+                },
+                compact = compact,
+            )
+        }
+
+        val lyricsShareButton: @Composable (MediaMetadata) -> Unit = { metadata ->
+            Box(
+                modifier = Modifier
+                    .size(if (isCompactPhone && isLandscape) 32.dp else 40.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(TextBackgroundColor.copy(alpha = 0.12f))
+                    .clickable {
+                        val intent = Intent().apply {
+                            action = Intent.ACTION_SEND
+                            type = "text/plain"
+                            putExtra(
+                                Intent.EXTRA_TEXT,
+                                "https://music.youtube.com/watch?v=${metadata.id}",
+                            )
+                        }
+                        context.startActivity(Intent.createChooser(intent, null))
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.share),
+                    contentDescription = null,
+                    tint = TextBackgroundColor,
+                    modifier = Modifier.size(if (isCompactPhone && isLandscape) 18.dp else 22.dp),
+                )
+            }
+        }
+
+        val lyricsLikeButton: @Composable (MediaMetadata) -> Unit = {
+            val isEpisode = currentSong?.song?.isEpisode == true
+            val isFavorite = if (isEpisode) currentSong?.song?.inLibrary != null else currentSong?.song?.liked == true
+            Box(
+                modifier = Modifier
+                    .size(if (isCompactPhone && isLandscape) 32.dp else 40.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(TextBackgroundColor.copy(alpha = 0.12f))
+                    .clickable { playerConnection.toggleLike() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(
+                        if (isFavorite) R.drawable.favorite else R.drawable.favorite_border,
+                    ),
+                    contentDescription = null,
+                    tint = TextBackgroundColor,
+                    modifier = Modifier.size(if (isCompactPhone && isLandscape) 18.dp else 22.dp),
+                )
+            }
+        }
+
         val controlsContent: @Composable ColumnScope.(MediaMetadata) -> Unit = { mediaMetadata ->
+            val compactPhoneLandscape = isCompactPhone && isLandscape
             val playPauseRoundness by animateDpAsState(
                 targetValue = if (isPlaying) 24.dp else 36.dp,
                 animationSpec = tween(durationMillis = 90, easing = LinearEasing),
@@ -985,7 +1123,7 @@ fun BottomSheetPlayer(
             // read as a matched pair, instead of the back button being centered by the parent
             // Column's horizontalAlignment (previous bug) and the more button floating over the
             // lyrics list in a different lavender style (previous bug).
-            if (showInlineLyrics) {
+            if (showInlineLyrics && !isLandscape) {
                 Row(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
@@ -1041,10 +1179,6 @@ fun BottomSheetPlayer(
                             }
                         }
 
-                        LyricsFloatingMoreButton(
-                            mediaMetadata = mediaMetadata,
-                            iconColor = TextBackgroundColor,
-                        )
                     }
                 }
             }
@@ -1068,7 +1202,7 @@ fun BottomSheetPlayer(
                     targetState = showInlineLyrics,
                     label = "ThumbnailAnimation",
                 ) { showLyrics ->
-                    if (showLyrics) {
+                    if (showLyrics && !isLandscape) {
                         Row {
                             if (hidePlayerThumbnail) {
                                 Box(
@@ -1114,7 +1248,11 @@ fun BottomSheetPlayer(
                     ) { title ->
                         Text(
                             text = title,
-                            style = MaterialTheme.typography.titleLarge,
+                            style = if (compactPhoneLandscape) {
+                                MaterialTheme.typography.titleMedium
+                            } else {
+                                MaterialTheme.typography.titleLarge
+                            },
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -1176,7 +1314,7 @@ fun BottomSheetPlayer(
                                             withStyle(
                                                 SpanStyle(
                                                     color = TextBackgroundColor.copy(alpha = 0.7f),
-                                                    fontSize = 16.sp,
+                                                    fontSize = if (compactPhoneLandscape) 13.sp else 16.sp,
                                                 ),
                                             ) {
                                                 append(" - ")
@@ -1260,7 +1398,20 @@ fun BottomSheetPlayer(
                 // Share/like/overflow button cluster stays exactly as on the normal player
                 // screen; the lyrics page moves its own overflow trigger to float over the
                 // lyrics list instead (see the floating "more" button below).
-                if (!showInlineLyrics) {
+                if (showInlineLyrics) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        lyricsShareButton(mediaMetadata)
+                        lyricsLikeButton(mediaMetadata)
+                        LyricsFloatingMoreButton(
+                            mediaMetadata = mediaMetadata,
+                            iconColor = TextBackgroundColor,
+                            compact = compactPhoneLandscape,
+                        )
+                    }
+                } else if (!showInlineLyrics) {
                 if (useNewPlayerDesign) {
                     val circleShape = RoundedCornerShape(50)
 
@@ -1313,63 +1464,35 @@ fun BottomSheetPlayer(
                             )
                         }
 
-                        AnimatedContent(targetState = showInlineLyrics, label = "LikeButton") { showLyrics ->
-                            if (showLyrics) {
-                                val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(RoundedCornerShape(50))
-                                        .background(TextBackgroundColor.copy(alpha = 0.12f))
-                                        .clickable {
-                                            menuState.show {
-                                                com.recordlabs.music.ui.menu.LyricsMenu(
-                                                    lyricsProvider = { currentLyrics },
-                                                    songProvider = { currentSong?.song },
-                                                    mediaMetadataProvider = { mediaMetadata },
-                                                    onDismiss = menuState::dismiss,
-                                                    onShowOffsetDialog = {
-                                                        bottomSheetPageState.show {
-                                                            ShowOffsetDialog(
-                                                                songProvider = { currentSong?.song },
-                                                            )
-                                                        }
-                                                    },
-                                                )
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        painter = painterResource(R.drawable.more_horiz),
-                                        contentDescription = null,
-                                        tint = TextBackgroundColor,
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                }
-                            } else {
-                                // For episodes, show saved state (inLibrary); for songs, show liked state
-                                val isEpisode = currentSong?.song?.isEpisode == true
-                                val isFavorite = if (isEpisode) currentSong?.song?.inLibrary != null else currentSong?.song?.liked == true
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(RoundedCornerShape(50))
-                                        .background(TextBackgroundColor.copy(alpha = 0.12f))
-                                        .clickable { playerConnection.toggleLike() },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        painter = painterResource(
-                                            if (isFavorite) R.drawable.favorite else R.drawable.favorite_border
-                                        ),
-                                        contentDescription = null,
-                                        tint = TextBackgroundColor,
-                                        modifier = Modifier.size(22.dp),
-                                    )
-                                }
-                            }
+                        // Keep the normal-player action cluster stable: share, like,
+                        // then three-dots. It must not disappear when lyrics mode changes.
+                        val isEpisode = currentSong?.song?.isEpisode == true
+                        val isFavorite = if (isEpisode) currentSong?.song?.inLibrary != null else currentSong?.song?.liked == true
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(TextBackgroundColor.copy(alpha = 0.12f))
+                                .clickable { playerConnection.toggleLike() },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                painter = painterResource(
+                                    if (isFavorite) R.drawable.favorite else R.drawable.favorite_border
+                                ),
+                                contentDescription = null,
+                                tint = TextBackgroundColor,
+                                modifier = Modifier.size(22.dp),
+                            )
                         }
+
+                        PlayerMoreMenuButton(
+                            mediaMetadata = mediaMetadata,
+                            state = state,
+                            // Match the share/like circles on the normal player.
+                            textButtonColor = TextBackgroundColor.copy(alpha = 0.12f),
+                            iconButtonColor = TextBackgroundColor,
+                        )
                     }
                 } else {
                     Box(
@@ -1454,7 +1577,15 @@ fun BottomSheetPlayer(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(
+                Modifier.height(
+                    when {
+                        isLandscape && showInlineLyrics -> 2.dp
+                        !isLandscape && !showInlineLyrics -> 8.dp
+                        else -> 24.dp
+                    },
+                ),
+            )
 
             if (showInlineLyrics) {
                 // Lyrics page always uses a slim, thumb-less, white seek bar regardless of the
@@ -1639,7 +1770,7 @@ fun BottomSheetPlayer(
                 )
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(if (isLandscape && showInlineLyrics) 2.dp else 24.dp))
 
             AnimatedVisibility(
                 visible = !isFullScreen,
@@ -1648,36 +1779,9 @@ fun BottomSheetPlayer(
             ) {
                 Column {
                     if (showInlineLyrics) {
-                        LyricsPageBottomControls(
-                            isPlaying = effectiveIsPlaying,
-                            canSkipPrevious = canSkipPrevious && (!isListenTogetherGuest || isGuestWithControl),
-                            canSkipNext = canSkipNext && (!isListenTogetherGuest || isGuestWithControl),
-                            iconColor = TextBackgroundColor,
-                            onPrevious = {
-                                if (isGuestWithControl) listenTogetherManager?.sendGuestCommand(PlaybackActions.SKIP_PREV)
-                                else playerConnection.seekToPrevious()
-                            },
-                            onNext = {
-                                if (isGuestWithControl) listenTogetherManager?.sendGuestCommand(PlaybackActions.SKIP_NEXT)
-                                else playerConnection.seekToNext()
-                            },
-                            onPlayPause = {
-                                if (isListenTogetherGuest && !isGuestWithControl) {
-                                    playerConnection.toggleMute()
-                                } else if (isGuestWithControl) {
-                                    listenTogetherManager?.sendGuestCommand("TOGGLE_PLAY")
-                                } else if (isCasting) {
-                                    if (castIsPlaying) castHandler?.pause() else castHandler?.play()
-                                } else if (playbackState == STATE_ENDED) {
-                                    playerConnection.player.seekTo(0, 0)
-                                    playerConnection.player.playWhenReady = true
-                                } else {
-                                    playerConnection.togglePlayPause()
-                                }
-                            },
-                        )
+                        lyricsTransportControls(compactPhoneLandscape)
 
-                        Spacer(Modifier.height(20.dp))
+                        Spacer(Modifier.height(if (isLandscape && showInlineLyrics) 4.dp else 20.dp))
 
                         LyricsPageActionBar(
                             shuffleEnabled = shuffleModeEnabled,
@@ -1694,7 +1798,7 @@ fun BottomSheetPlayer(
                             onEnterFullScreen = {
                                 isFullScreen = true
                             },
-                            onMore = {
+                        onMore = {
                                 menuState.show {
                                     PlayerMenu(
                                         mediaMetadata = mediaMetadata,
@@ -1710,6 +1814,7 @@ fun BottomSheetPlayer(
                                     )
                                 }
                             },
+                            compact = compactPhoneLandscape,
                         )
                     } else {
                     if (useNewPlayerDesign) {
@@ -1890,7 +1995,18 @@ fun BottomSheetPlayer(
                     // the lyrics page, shown here too so there's a working entry point into lyrics
                     // view from the normal player (previously only reachable once already inside
                     // lyrics mode).
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(
+                        Modifier.height(
+                            if (!isLandscape) {
+                                // Keep roughly a 5% visual separation between the transport
+                                // row and the action bar, while lifting the navbar on short
+                                // portrait windows.
+                                minOf(16.dp, configuration.screenHeightDp.dp * 0.05f)
+                            } else {
+                                if (isCompactPhone) 32.dp else 20.dp
+                            },
+                        ),
+                    )
 
                     LyricsPageActionBar(
                         shuffleEnabled = shuffleModeEnabled,
@@ -1904,7 +2020,7 @@ fun BottomSheetPlayer(
                         },
                         onToggleLyrics = { showInlineLyrics = !showInlineLyrics },
                         onToggleRepeat = playerConnection.player::toggleRepeatMode,
-                        onMore = {
+                            onMore = {
                             menuState.show {
                                 PlayerMenu(
                                     mediaMetadata = mediaMetadata,
@@ -1920,6 +2036,7 @@ fun BottomSheetPlayer(
                                 )
                             }
                         },
+                        compact = compactPhoneLandscape,
                     )
                     }
                 }
@@ -1957,7 +2074,7 @@ fun BottomSheetPlayer(
                         contentAlignment = Alignment.Center,
                         modifier =
                             Modifier
-                                .weight(1f)
+                                .weight(if (showInlineLyrics) 0.5f else 1f)
                                 .nestedScroll(state.preUpPostDownNestedScrollConnection)
                                 // Tap-to-reveal listener lives on this outer Box (which fills the
                                 // whole remaining area) rather than on the Thumbnail/lyrics content
@@ -1993,11 +2110,118 @@ fun BottomSheetPlayer(
                             transitionSpec = { fadeIn() togetherWith fadeOut() },
                         ) { showLyrics ->
                             if (showLyrics) {
-                                InlineLyricsView(
-                                    mediaMetadata = mediaMetadata,
-                                    showLyrics = showLyrics,
-                                    positionProvider = { effectivePosition },
-                                )
+                                BoxWithConstraints(Modifier.fillMaxSize()) {
+                                    val availableArtworkWidth =
+                                        (maxWidth - (PlayerHorizontalPadding * 2)).coerceAtLeast(0.dp)
+                                    val artworkSize = if (isCompactPhone) {
+                                        // On phone landscape, reserve the height required by
+                                        // the existing title, metadata, progress, transport,
+                                        // and action-row components first. The artwork then uses
+                                        // only the remaining height, so controls stay in-viewport.
+                                        minOf(
+                                            availableArtworkWidth * 0.38f,
+                                            (maxHeight - 310.dp).coerceAtLeast(72.dp),
+                                        )
+                                    } else {
+                                        availableArtworkWidth * 0.6f
+                                    }
+                                    val artworkFrameSize = artworkSize + (PlayerHorizontalPadding * 2)
+
+                                    Column(
+                                        modifier = Modifier.fillMaxSize(),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = if (isCompactPhone) Arrangement.Top else Arrangement.Center,
+                                    ) {
+                                        if (isCompactPhone) {
+                                            // Keep the phone back button in its original
+                                            // standalone position above the artwork.
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(40.dp),
+                                                contentAlignment = Alignment.TopStart,
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(40.dp)
+                                                        .clip(RoundedCornerShape(50))
+                                                        .background(TextBackgroundColor.copy(alpha = 0.12f))
+                                                        .clickable {
+                                                            showInlineLyrics = false
+                                                            isFullScreen = false
+                                                        },
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Icon(
+                                                        painter = painterResource(R.drawable.arrow_back),
+                                                        contentDescription = null,
+                                                        tint = TextBackgroundColor,
+                                                        modifier = Modifier.size(22.dp),
+                                                    )
+                                                }
+                                            }
+                                            Box(
+                                                modifier = Modifier.size(artworkFrameSize),
+                                            ) {
+                                                Thumbnail(
+                                                    sliderPositionProvider = sliderPositionProvider,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    isPlayerExpanded = isExpandedProvider,
+                                                    isLandscape = true,
+                                                    landscapeArtworkSize = artworkSize,
+                                                    isListenTogetherGuest = isListenTogetherGuest,
+                                                    isCompactPhone = isCompactPhone,
+                                                )
+
+                                            }
+                                        } else {
+                                            Box(
+                                                modifier = Modifier.width(artworkFrameSize),
+                                                contentAlignment = Alignment.CenterStart,
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(40.dp)
+                                                        .clip(RoundedCornerShape(50))
+                                                        .background(TextBackgroundColor.copy(alpha = 0.12f))
+                                                        .clickable {
+                                                            showInlineLyrics = false
+                                                            isFullScreen = false
+                                                        },
+                                                    contentAlignment = Alignment.Center,
+                                                ) {
+                                                    Icon(
+                                                        painter = painterResource(R.drawable.arrow_back),
+                                                        contentDescription = null,
+                                                        tint = TextBackgroundColor,
+                                                        modifier = Modifier.size(22.dp),
+                                                    )
+                                                }
+                                            }
+                                            Thumbnail(
+                                                sliderPositionProvider = sliderPositionProvider,
+                                                modifier = Modifier.size(artworkFrameSize),
+                                                isPlayerExpanded = isExpandedProvider,
+                                                isLandscape = true,
+                                                landscapeArtworkSize = artworkSize,
+                                                isListenTogetherGuest = isListenTogetherGuest,
+                                                isCompactPhone = isCompactPhone,
+                                            )
+                                        }
+                                        Spacer(Modifier.height(if (isCompactPhone) 0.dp else 4.dp))
+                                    mediaMetadata?.let {
+                                        Column(
+                                            modifier = if (isCompactPhone) {
+                                                Modifier.fillMaxWidth()
+                                            } else {
+                                                Modifier.width(artworkFrameSize)
+                                            },
+                                        ) {
+                                            controlsContent(it)
+                                        }
+                                        }
+                                    }
+                                }
                             } else {
                                 Thumbnail(
                                     sliderPositionProvider = sliderPositionProvider,
@@ -2005,6 +2229,7 @@ fun BottomSheetPlayer(
                                     isPlayerExpanded = isExpandedProvider,
                                     isLandscape = true,
                                     isListenTogetherGuest = isListenTogetherGuest,
+                                    isCompactPhone = isCompactPhone,
                                 )
                             }
                         }
@@ -2014,17 +2239,29 @@ fun BottomSheetPlayer(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier =
                             Modifier
-                                .weight(if (showInlineLyrics) 0.65f else 1f, false)
+                                .weight(if (showInlineLyrics) 0.5f else 1f, false)
                                 .animateContentSize()
                                 .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top)),
                     ) {
-                        Spacer(Modifier.weight(1f))
-
-                        mediaMetadata?.let {
-                            controlsContent(it)
+                        if (showInlineLyrics) {
+                            InlineLyricsView(
+                                mediaMetadata = mediaMetadata,
+                                showLyrics = true,
+                                positionProvider = { effectivePosition },
+                                isLandscape = true,
+                                isCompactPhone = isCompactPhone,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            Spacer(Modifier.weight(1f))
                         }
 
-                        Spacer(Modifier.weight(1f))
+                        if (!showInlineLyrics) {
+                            mediaMetadata?.let {
+                                controlsContent(it)
+                            }
+                            Spacer(Modifier.weight(1f))
+                        }
                     }
                 }
             }
@@ -2038,15 +2275,28 @@ fun BottomSheetPlayer(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier =
                         Modifier
-                            .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
+                            // The artwork is full-bleed in portrait. Controls apply their
+                            // own horizontal padding, so system side insets must not shrink
+                            // the artwork slot.
                             .padding(bottom = bottomPadding)
                             .animateContentSize(),
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier =
-                            Modifier
-                                .weight(1f)
+                            if (isCompactPhone && showInlineLyrics) {
+                                Modifier
+                                    // Lyrics phone portrait reflows instead of leaving the
+                                    // hidden playback controls' old space behind.
+                                    .fillMaxWidth()
+                                    .weight(if (isFullScreen) 0.8f else 0.5f)
+                            } else {
+                                Modifier
+                                // Restore the established square artwork area. The space that
+                                // used to be added below it is now reclaimed by the controls.
+                                    .fillMaxWidth()
+                                    .aspectRatio(1f)
+                            }
                                 // Tap-to-reveal listener lives on this outer Box (which fills the
                                 // whole remaining area) rather than on the Thumbnail/lyrics content
                                 // below, so tapping ANY empty area of the screen reveals hidden
@@ -2087,18 +2337,69 @@ fun BottomSheetPlayer(
                                     positionProvider = { effectivePosition },
                                 )
                             } else {
-                                Thumbnail(
-                                    sliderPositionProvider = sliderPositionProvider,
-                                    modifier = Modifier.nestedScroll(state.preUpPostDownNestedScrollConnection),
-                                    isPlayerExpanded = isExpandedProvider,
-                                    isListenTogetherGuest = isListenTogetherGuest,
-                                )
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .graphicsLayer {
+                                                compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                                            }
+                                            .drawWithCache {
+                                                // Fade the artwork alpha itself. The page
+                                                // background remains untouched underneath it.
+                                                val artworkAlphaMask = Brush.verticalGradient(
+                                                    0f to Color.White,
+                                                    0.68f to Color.White,
+                                                    1f to Color.Transparent,
+                                                )
+                                                onDrawWithContent {
+                                                    drawContent()
+                                                    drawRect(artworkAlphaMask, blendMode = BlendMode.DstIn)
+                                                }
+                                            },
+                                    ) {
+                                        Thumbnail(
+                                            sliderPositionProvider = sliderPositionProvider,
+                                            modifier = Modifier.nestedScroll(state.preUpPostDownNestedScrollConnection),
+                                            isPlayerExpanded = isExpandedProvider,
+                                            isListenTogetherGuest = isListenTogetherGuest,
+                                            isCompactPhone = isCompactPhone,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
 
+                    // On a phone, keep metadata and transport controls below the lyrics
+                    // viewport so the auto-hidden bottom bar does not crowd the next lines.
+                    Spacer(
+                        Modifier.height(
+                            when {
+                                isCompactPhone && showInlineLyrics && isFullScreen -> 0.dp
+                                isCompactPhone && showInlineLyrics -> 12.dp
+                                !showInlineLyrics -> {
+                                    // Preserve the requested 10% breathing room on tall
+                                    // portrait windows (18:9), but reclaim it progressively as
+                                    // the window becomes shorter (down to 0dp at 16:9) so the
+                                    // lower controls remain visible without shrinking artwork.
+                                    val windowRatio =
+                                        configuration.screenHeightDp.toFloat() /
+                                            configuration.screenWidthDp.coerceAtLeast(1).toFloat()
+                                    val ratioProgress =
+                                        ((windowRatio - (16f / 9f)) / (2f - (16f / 9f)))
+                                            .coerceIn(0f, 1f)
+                                    configuration.screenHeightDp.dp * 0.1f * ratioProgress
+                                }
+                                else -> 12.dp
+                            },
+                        ),
+                    )
+
                     mediaMetadata?.let {
-                        controlsContent(it)
+                        Column {
+                            controlsContent(it)
+                        }
                     }
 
                     // Was 30.dp: combined with the bottomPadding already reserved above (for the
@@ -2149,6 +2450,7 @@ fun BottomSheetPlayer(
 private fun LyricsFloatingMoreButton(
     mediaMetadata: MediaMetadata,
     iconColor: Color,
+    compact: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
@@ -2160,7 +2462,7 @@ private fun LyricsFloatingMoreButton(
     Box(
         modifier =
             modifier
-                .size(40.dp)
+                .size(if (compact) 32.dp else 40.dp)
                 .clip(RoundedCornerShape(50))
                 .background(iconColor.copy(alpha = 0.12f))
                 .clickable {
@@ -2184,7 +2486,7 @@ private fun LyricsFloatingMoreButton(
             painter = painterResource(R.drawable.more_horiz),
             contentDescription = null,
             tint = iconColor,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(if (compact) 18.dp else 22.dp),
         )
     }
 }
@@ -2195,6 +2497,9 @@ fun InlineLyricsView(
     mediaMetadata: MediaMetadata?,
     showLyrics: Boolean,
     positionProvider: () -> Long,
+    isLandscape: Boolean = false,
+    isCompactPhone: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
     val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
@@ -2291,7 +2596,7 @@ fun InlineLyricsView(
 
     Box(
         modifier =
-            Modifier
+            modifier
                 .fillMaxSize()
                 .clip(RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center,
@@ -2321,7 +2626,11 @@ fun InlineLyricsView(
                 ProvideTextStyle(
                     value =
                         MaterialTheme.typography.bodyMedium.copy(
-                            fontSize = 14.sp,
+                            fontSize = when {
+                                isLandscape && isCompactPhone -> 24.sp
+                                isLandscape -> 48.sp
+                                else -> 14.sp
+                            },
                             textAlign = TextAlign.Center,
                         ),
                 ) {
@@ -2346,6 +2655,7 @@ private fun LyricsPageBottomControls(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onPlayPause: () -> Unit,
+    compact: Boolean = false,
 ) {
     Row(
         horizontalArrangement = Arrangement.Center,
@@ -2356,26 +2666,26 @@ private fun LyricsPageBottomControls(
             icon = R.drawable.fast_rewind,
             enabled = canSkipPrevious,
             color = iconColor,
-            modifier = Modifier.size(40.dp),
+            modifier = Modifier.size(if (compact) 32.dp else 40.dp),
             onClick = onPrevious,
         )
 
-        Spacer(modifier = Modifier.width(32.dp))
+        Spacer(modifier = Modifier.width(if (compact) 16.dp else 32.dp))
 
         ResizableIconButton(
             icon = if (isPlaying) R.drawable.pause else R.drawable.play,
             color = iconColor,
-            modifier = Modifier.size(64.dp),
+            modifier = Modifier.size(if (compact) 48.dp else 64.dp),
             onClick = onPlayPause,
         )
 
-        Spacer(modifier = Modifier.width(32.dp))
+        Spacer(modifier = Modifier.width(if (compact) 16.dp else 32.dp))
 
         ResizableIconButton(
             icon = R.drawable.fast_forward,
             enabled = canSkipNext,
             color = iconColor,
-            modifier = Modifier.size(40.dp),
+            modifier = Modifier.size(if (compact) 32.dp else 40.dp),
             onClick = onNext,
         )
     }
@@ -2400,6 +2710,7 @@ private fun LyricsPageActionBar(
     onToggleLyrics: () -> Unit,
     onToggleRepeat: () -> Unit,
     onMore: () -> Unit,
+    compact: Boolean = false,
     // Only shown on the lyrics page itself: lets the user jump straight into fullscreen
     // (controls hidden) instead of waiting for the auto-hide timer.
     onEnterFullScreen: (() -> Unit)? = null,
@@ -2418,13 +2729,13 @@ private fun LyricsPageActionBar(
             modifier =
                 Modifier
                     .weight(1f)
-                    .padding(vertical = 10.dp),
+                    .padding(vertical = if (compact) 4.dp else 10.dp),
             contentAlignment = Alignment.Center,
         ) {
             Box(
                 modifier =
                     Modifier
-                        .size(34.dp)
+                        .size(if (compact) 28.dp else 34.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .then(if (active) Modifier.background(chipColor) else Modifier)
                         .clickable(onClick = onClick),
@@ -2434,7 +2745,7 @@ private fun LyricsPageActionBar(
                     painter = painterResource(icon),
                     contentDescription = contentDescription,
                     tint = if (active) onChipColor else iconColor,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(if (compact) 16.dp else 20.dp),
                 )
             }
         }

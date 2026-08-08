@@ -55,7 +55,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
@@ -69,13 +68,11 @@ import androidx.compose.ui.unit.sp
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import coil3.compose.AsyncImage
-import coil3.request.CachePolicy
-import coil3.request.ImageRequest
 import com.recordlabs.music.LocalListenTogetherManager
 import com.recordlabs.music.LocalPlayerConnection
 import com.recordlabs.music.R
 import com.recordlabs.music.constants.CropAlbumArtKey
+import com.recordlabs.music.constants.AnimatedArtworkKey
 import com.recordlabs.music.constants.HidePlayerThumbnailKey
 import com.recordlabs.music.constants.PlayerBackgroundStyle
 import com.recordlabs.music.constants.PlayerBackgroundStyleKey
@@ -121,20 +118,28 @@ private fun calculateThumbnailDimensions(
     containerHeight: Dp = containerWidth,
     horizontalPadding: Dp = PlayerHorizontalPadding,
     cornerRadius: Dp = ThumbnailCornerRadius,
-    isLandscape: Boolean = false
+    landscapeArtworkSize: Dp? = null,
+    isLandscape: Boolean = false,
+    isCompactPhone: Boolean = false,
 ): ThumbnailDimensions {
     // In landscape, use height as the constraining dimension for a square thumbnail
     val effectiveSize = if (isLandscape) {
-        minOf(containerWidth, containerHeight) - (horizontalPadding * 2)
+        // Keep the landscape player cover compact so the controls and metadata have room beside it.
+        landscapeArtworkSize
+            ?: (minOf(containerWidth, containerHeight) - (horizontalPadding * 2)) *
+                if (isCompactPhone) 1f else 0.6f
     } else {
-        containerWidth // Edge-to-edge
+        // Portrait must also use the constraining dimension. Using width alone lets
+        // the card exceed the available height when the WSA window is resized, which
+        // makes the artwork surface appear stretched.
+        minOf(containerWidth, containerHeight)
     }
     return ThumbnailDimensions(
         itemWidth = containerWidth,
         containerSize = containerWidth,
         thumbnailSize = effectiveSize,
-        // Slightly rounded corners on the cover art (both portrait and landscape).
-        cornerRadius = if (isLandscape) cornerRadius * 2 else 16.dp
+        // Keep landscape rounded, but make the portrait player artwork edge-to-edge.
+        cornerRadius = if (isLandscape) cornerRadius * 2 else 0.dp
     )
 }
 
@@ -204,7 +209,9 @@ fun Thumbnail(
     modifier: Modifier = Modifier,
     isPlayerExpanded: () -> Boolean = { true },
     isLandscape: Boolean = false,
+    landscapeArtworkSize: Dp? = null,
     isListenTogetherGuest: Boolean = false,
+    isCompactPhone: Boolean = false,
 ) {
     val playerConnection = LocalPlayerConnection.current ?: return
     val context = LocalContext.current
@@ -222,7 +229,8 @@ fun Thumbnail(
     val swipeThumbnailPref by rememberPreference(SwipeThumbnailKey, true)
     val swipeThumbnail = swipeThumbnailPref && !isListenTogetherGuest
     val hidePlayerThumbnail by rememberPreference(HidePlayerThumbnailKey, false)
-    val cropAlbumArt by rememberPreference(CropAlbumArtKey, true)
+    val cropAlbumArt by rememberPreference(CropAlbumArtKey, false)
+    val animatedArtworkEnabled by rememberPreference(AnimatedArtworkKey, true)
     val playerBackground by rememberEnumPreference(
         key = PlayerBackgroundStyleKey,
         defaultValue = PlayerBackgroundStyle.BLUR
@@ -329,22 +337,13 @@ fun Thumbnail(
             exit = fadeOut(),
             modifier = Modifier
                 .fillMaxSize()
-                .then(if (!isLandscape) Modifier.statusBarsPadding() else Modifier),
+                .then(if (!isLandscape && !isCompactPhone) Modifier.statusBarsPadding() else Modifier),
         ) {
             Column(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = if (isLandscape) Arrangement.Center else Arrangement.Top
             ) {
-                // Now Playing header - hide in landscape mode
-                if (!isLandscape) {
-                    ThumbnailHeader(
-                        queueTitle = queueTitle,
-                        albumTitle = mediaMetadata?.album?.title,
-                        textColor = textBackgroundColor
-                    )
-                }
-                
                 // Thumbnail content
                 BoxWithConstraints(
                     contentAlignment = Alignment.Center,
@@ -355,11 +354,13 @@ fun Thumbnail(
                     }
                 ) {
                     // Calculate dimensions once per size change, considering landscape mode
-                    val dimensions = remember(maxWidth, maxHeight, isLandscape) {
+                    val dimensions = remember(maxWidth, maxHeight, isLandscape, landscapeArtworkSize, isCompactPhone) {
                         calculateThumbnailDimensions(
                             containerWidth = maxWidth,
                             containerHeight = maxHeight,
-                            isLandscape = isLandscape
+                            landscapeArtworkSize = landscapeArtworkSize,
+                            isLandscape = isLandscape,
+                            isCompactPhone = isCompactPhone,
                         )
                     }
 
@@ -405,6 +406,7 @@ fun Thumbnail(
                                 context = context,
                                 isLandscape = isLandscape,
                                 isListenTogetherGuest = isListenTogetherGuest,
+                                animatedArtworkEnabled = animatedArtworkEnabled,
                                 currentMediaId = mediaMetadata?.id,
                                 currentMediaThumbnail = mediaMetadata?.thumbnailUrl
                             )
@@ -502,11 +504,13 @@ private fun ThumbnailItem(
     context: android.content.Context,
     isLandscape: Boolean = false,
     isListenTogetherGuest: Boolean = false,
+    animatedArtworkEnabled: Boolean = true,
     currentMediaId: String? = null,
     currentMediaThumbnail: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val incrementalSeekSkipEnabled by rememberPreference(SeekExtraSeconds, defaultValue = false)
+    val activeMediaMetadata by playerConnection.mediaMetadata.collectAsStateWithLifecycle()
     var skipMultiplier by remember { mutableIntStateOf(1) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
 
@@ -525,7 +529,9 @@ private fun ThumbnailItem(
                 if (isLandscape) {
                     Modifier.padding(horizontal = PlayerHorizontalPadding)
                 } else {
-                    Modifier.padding(horizontal = PlayerHorizontalPadding)
+                    // Portrait artwork is intentionally edge-to-edge. Controls keep
+                    // their own horizontal padding below the artwork.
+                    Modifier
                 }
             )
             .graphicsLayer {
@@ -563,7 +569,7 @@ private fun ThumbnailItem(
                     }
                 )
             },
-        contentAlignment = Alignment.Center
+        contentAlignment = if (isLandscape) Alignment.Center else Alignment.TopCenter
     ) {
         val artworkUriToUse = if (item.mediaId == currentMediaId && !currentMediaThumbnail.isNullOrBlank()) {
             currentMediaThumbnail
@@ -577,20 +583,26 @@ private fun ThumbnailItem(
         // since there's no longer a gap between the image and its container to fill.
         var imageAspectRatio by remember(artworkUriToUse) { mutableFloatStateOf(1f) }
 
-        val cardWidth = if (cropAlbumArt || imageAspectRatio >= 1f) {
-            dimensions.thumbnailSize
-        } else {
-            dimensions.thumbnailSize * imageAspectRatio
-        }
-        val cardHeight = if (cropAlbumArt || imageAspectRatio >= 1f) {
-            if (cropAlbumArt) dimensions.thumbnailSize else dimensions.thumbnailSize / imageAspectRatio
-        } else {
-            dimensions.thumbnailSize
-        }
+        // Match the proven landscape behavior: the player artwork slot itself is
+        // always square. The artwork remains uncropped and keeps its own ratio
+        // inside this slot, while the transparent fit area no longer becomes a
+        // separate dark portrait placeholder above/below the image.
+        val safeAspectRatio = imageAspectRatio.coerceIn(0.1f, 10f)
+        val cardWidth = if (isLandscape) dimensions.thumbnailSize else dimensions.itemWidth
 
         Box(
             modifier = Modifier
-                .size(cardWidth, cardHeight)
+                .then(
+                    if (isLandscape) {
+                        Modifier.size(cardWidth)
+                    } else {
+                        // The portrait card follows the artwork's own ratio instead of
+                        // filling a taller placeholder and exposing dark bars.
+                        Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(safeAspectRatio)
+                    }
+                )
                 .clip(RoundedCornerShape(dimensions.cornerRadius))
         ) {
             if (hidePlayerThumbnail) {
@@ -599,6 +611,11 @@ private fun ThumbnailItem(
                 ThumbnailImage(
                     artworkUri = artworkUriToUse,
                     cropArtwork = cropAlbumArt,
+                    animatedArtworkEnabled = animatedArtworkEnabled && item.mediaId == currentMediaId && activeMediaMetadata?.id == item.mediaId,
+                    animatedArtworkSong = activeMediaMetadata?.title.orEmpty(),
+                    animatedArtworkArtist = activeMediaMetadata?.artists?.firstOrNull()?.name.orEmpty(),
+                    animatedArtworkDurationSeconds = activeMediaMetadata?.duration ?: 0,
+                    animatedArtworkAlbum = activeMediaMetadata?.album?.title.orEmpty(),
                     onAspectRatioChanged = { imageAspectRatio = it }
                 )
             }
@@ -625,7 +642,9 @@ private fun HiddenThumbnailPlaceholder(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            // Fit-mode letterboxing should reveal the page background, not a second
+            // dark placeholder panel around the artwork.
+            .background(Color.Transparent),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -647,6 +666,11 @@ private fun HiddenThumbnailPlaceholder(
 private fun ThumbnailImage(
     artworkUri: String?,
     cropArtwork: Boolean,
+    animatedArtworkEnabled: Boolean,
+    animatedArtworkSong: String,
+    animatedArtworkArtist: String,
+    animatedArtworkDurationSeconds: Int,
+    animatedArtworkAlbum: String,
     modifier: Modifier = Modifier,
     onAspectRatioChanged: (Float) -> Unit = {}
 ) {
@@ -657,27 +681,20 @@ private fun ThumbnailImage(
                 // Use offscreen compositing for hardware acceleration during animations
                 compositingStrategy = CompositingStrategy.Offscreen
             }
-            // Placeholder tint while the image is loading, before its real aspect ratio is known.
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            // Keep Fit-mode loading space transparent so it never becomes a dark
+            // letterbox around the artwork.
+            .background(Color.Transparent),
         contentAlignment = Alignment.Center,
     ) {
-        AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(artworkUri)
-                .memoryCachePolicy(CachePolicy.ENABLED)
-                .diskCachePolicy(CachePolicy.ENABLED)
-                .networkCachePolicy(CachePolicy.ENABLED)
-                .build(),
-            contentDescription = null,
-            contentScale = if (cropArtwork) ContentScale.Crop else ContentScale.Fit,
-            onState = { state ->
-                val size = (state as? coil3.compose.AsyncImagePainter.State.Success)
-                    ?.painter
-                    ?.intrinsicSize
-                if (size != null && size.width > 0f && size.height > 0f) {
-                    onAspectRatioChanged(size.width / size.height)
-                }
-            },
+        AnimatedArtwork(
+            artworkUri = artworkUri,
+            song = animatedArtworkSong,
+            artist = animatedArtworkArtist,
+            durationSeconds = animatedArtworkDurationSeconds,
+            album = animatedArtworkAlbum,
+            cropArtwork = cropArtwork,
+            enabled = animatedArtworkEnabled,
+            onAspectRatioChanged = onAspectRatioChanged,
             modifier = Modifier.fillMaxSize(),
         )
     }

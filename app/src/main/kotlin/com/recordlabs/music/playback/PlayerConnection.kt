@@ -29,7 +29,9 @@ import com.recordlabs.music.extensions.getCurrentQueueIndex
 import com.recordlabs.music.extensions.getQueueWindows
 import com.recordlabs.music.extensions.metadata
 import com.recordlabs.music.extensions.togglePlayPause
+import com.recordlabs.music.models.MediaMetadata
 import com.recordlabs.music.playback.MusicService.MusicBinder
+import com.recordlabs.music.playback.queues.ListQueue
 import com.recordlabs.music.playback.queues.Queue
 import com.recordlabs.music.utils.dataStore
 import com.recordlabs.music.utils.get
@@ -194,6 +196,11 @@ class PlayerConnection(
     // Callback to check if playback changes should be blocked (e.g., Listen Together guest)
     var shouldBlockPlaybackChanges: (() -> Boolean)? = null
 
+    // Called when a blocked guest taps a single song to play it directly (set by
+    // ListenTogetherManager). Lets the tap be redirected into "Suggest to Host" instead of
+    // just doing nothing, without every screen needing its own suggestion-handling logic.
+    var onGuestSongTapped: ((MediaMetadata) -> Unit)? = null
+
     // Flag to allow internal sync operations to bypass blocking (set by ListenTogetherManager)
     @Volatile
     var allowInternalSync: Boolean = false
@@ -239,7 +246,24 @@ class PlayerConnection(
     fun playQueue(queue: Queue) {
         // Block if Listen Together guest (unless internal sync)
         if (!allowInternalSync && shouldBlockPlaybackChanges?.invoke() == true) {
-            Timber.tag("PlayerConnection").d("playQueue blocked - Listen Together guest")
+            // Guests still can't play directly, but tapping a single song shouldn't feel like a
+            // dead button either - redirect it into "Suggest to Host" instead. Only do this when
+            // the queue clearly represents ONE tapped song: a radio queue seeded by that song
+            // (preloadItem), or a list queue where the song at startIndex is the one that was
+            // actually tapped - this covers both "single song list" taps (Home/Search) AND "tap a
+            // row within the full visible list" taps (Library/Playlist/Queue screens), since both
+            // shapes use ListQueue with the tapped item's position. Bulk actions like "Play All"/
+            // shuffle mostly leave startIndex at its default of 0, so this can't perfectly tell
+            // those apart from "tapped the very first row" - but that's a minor, harmless overlap
+            // (worst case a guest pressing Play All ends up suggesting the first track), not a
+            // regression from the fully-blocked behavior guests had before.
+            val tappedSong = queue.preloadItem ?: (queue as? ListQueue)?.let { it.items.getOrNull(it.startIndex) }?.metadata
+            if (tappedSong != null && onGuestSongTapped != null) {
+                Timber.tag("PlayerConnection").d("playQueue redirected to guest suggestion: ${tappedSong.title}")
+                onGuestSongTapped?.invoke(tappedSong)
+            } else {
+                Timber.tag("PlayerConnection").d("playQueue blocked - Listen Together guest")
+            }
             return
         }
         if (!playerReadinessFlow.value) {
@@ -270,16 +294,22 @@ class PlayerConnection(
         }
     }
 
-    fun playNext(item: MediaItem) = playNext(listOf(item))
+    fun playNext(
+        item: MediaItem,
+        insertAfterMediaId: String? = null,
+    ) = playNext(listOf(item), insertAfterMediaId)
 
-    fun playNext(items: List<MediaItem>) {
+    fun playNext(
+        items: List<MediaItem>,
+        insertAfterMediaId: String? = null,
+    ) {
         // Block if Listen Together guest (unless internal sync)
         if (!allowInternalSync && shouldBlockPlaybackChanges?.invoke() == true) {
             Timber.tag("PlayerConnection").d("playNext blocked - Listen Together guest")
             return
         }
         try {
-            service.playNext(items)
+            service.playNext(items, insertAfterMediaId)
         } catch (e: Exception) {
             Timber.tag(TAG).e(e, "Error in playNext")
             throw e

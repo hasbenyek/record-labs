@@ -10,6 +10,7 @@ import com.recordlabs.innertube.YouTube
 import com.recordlabs.innertube.models.SongItem
 import com.recordlabs.music.extensions.toMediaItem
 import com.recordlabs.music.models.MediaMetadata
+import com.recordlabs.music.models.toMediaMetadata
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.withContext
 
@@ -19,8 +20,13 @@ class YouTubePlaylistQueue(
     private val initialSongs: List<SongItem> = emptyList(),
     private val initialContinuation: String? = null,
     private val startIndex: Int = 0,
-    override val preloadItem: MediaMetadata? = null,
+    preloadItem: MediaMetadata? = null,
 ) : Queue {
+    // Falls back to the song at startIndex within the already-known initialSongs (the row a user
+    // actually tapped on a playlist screen) when no explicit preloadItem is passed in, the same
+    // way LocalAlbumRadio/YouTubeQueue.radio() identify their seed song. Lets PlayerConnection
+    // .playQueue() detect and redirect single-song taps for Listen Together guests.
+    override val preloadItem: MediaMetadata? = preloadItem ?: initialSongs.getOrNull(startIndex)?.toMediaMetadata()
     private var continuation: String? = initialContinuation
     private var retryCount = 0
     private val maxRetries = 3
