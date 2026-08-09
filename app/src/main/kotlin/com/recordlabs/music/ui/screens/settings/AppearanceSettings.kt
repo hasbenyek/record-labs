@@ -194,7 +194,7 @@ fun AppearanceSettings(
     val (cropAlbumArt, onCropAlbumArtChange) =
         rememberPreference(
             CropAlbumArtKey,
-            defaultValue = false,
+            defaultValue = true,
         )
     val (animatedArtwork, onAnimatedArtworkChange) =
         rememberPreference(
@@ -231,7 +231,7 @@ fun AppearanceSettings(
     val (hideStatusBarOnFullscreen, onHideStatusBarOnFullscreenChange) =
         rememberPreference(
             HideStatusBarOnFullscreenKey,
-            defaultValue = false,
+            defaultValue = true,
         )
     val (respectAgentPositioning, onRespectAgentPositioningChange) = rememberPreference(RespectAgentPositioningKey, defaultValue = true)
     val (experimentalLyrics, onExperimentalLyricsChange) = rememberPreference(ExperimentalLyricsKey, defaultValue = true)
@@ -313,13 +313,13 @@ fun AppearanceSettings(
     val (swipeToSong, onSwipeToSongChange) =
         rememberPreference(
             SwipeToSongKey,
-            defaultValue = false,
+            defaultValue = true,
         )
 
     val (swipeToRemoveSong, onSwipeToRemoveSongChange) =
         rememberPreference(
             SwipeToRemoveSongKey,
-            defaultValue = false,
+            defaultValue = true,
         )
 
     val (showLikedPlaylist, onShowLikedPlaylistChange) =

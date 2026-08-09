@@ -68,6 +68,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -76,6 +78,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedIconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -87,6 +90,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -124,8 +128,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
@@ -157,6 +159,8 @@ import com.recordlabs.music.constants.DarkModeKey
 import com.recordlabs.music.constants.HidePlayerThumbnailKey
 import com.recordlabs.music.constants.HideStatusBarOnFullscreenKey
 import com.recordlabs.music.constants.KeepScreenOn
+import com.recordlabs.music.constants.LyricsTextSizeKey
+import com.recordlabs.music.constants.LyricsTextSizeLandscapeKey
 import com.recordlabs.music.constants.PlayerBackgroundStyle
 import com.recordlabs.music.constants.PlayerBackgroundStyleKey
 import com.recordlabs.music.constants.PlayerButtonsStyle
@@ -177,7 +181,10 @@ import com.recordlabs.music.extensions.togglePlayPause
 import com.recordlabs.music.extensions.toggleRepeatMode
 import com.recordlabs.music.listentogether.PlaybackActions
 import com.recordlabs.music.listentogether.RoomRole
+import com.recordlabs.music.lyrics.LyricsUtils
+import com.recordlabs.music.lyrics.fetchLyricsIfMissing
 import com.recordlabs.music.models.MediaMetadata
+import com.recordlabs.music.ui.player.offlineArtworkUri
 import com.recordlabs.music.ui.component.BottomSheet
 import com.recordlabs.music.ui.component.BottomSheetState
 import com.recordlabs.music.ui.component.LocalBottomSheetPageState
@@ -225,6 +232,7 @@ fun BottomSheetPlayer(
     pureBlack: Boolean,
 ) {
     val context = LocalContext.current
+    val database = LocalDatabase.current
     val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     val menuState = LocalMenuState.current
     val sleepTimerDefaultSetTemplate = stringResource(R.string.sleep_timer_default_set)
@@ -336,6 +344,9 @@ fun BottomSheetPlayer(
 
     val playbackState by playerConnection.playbackState.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
+    val offlineArtwork by remember(mediaMetadata?.id) {
+        mutableStateOf(offlineArtworkUri(context, mediaMetadata?.id))
+    }
     val currentSong by playerConnection.currentSong.collectAsStateWithLifecycle(initialValue = null)
     val automix by playerConnection.service.automixItems.collectAsStateWithLifecycle()
     val repeatMode by playerConnection.repeatMode.collectAsStateWithLifecycle()
@@ -343,6 +354,19 @@ fun BottomSheetPlayer(
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsStateWithLifecycle()
     val canSkipNext by playerConnection.canSkipNext.collectAsStateWithLifecycle()
     val isMuted by playerConnection.isMuted.collectAsStateWithLifecycle()
+
+    // Fetch lyrics as soon as a track becomes active, without requiring the lyrics page to be opened.
+    LaunchedEffect(mediaMetadata?.id) {
+        val metadata = mediaMetadata ?: return@LaunchedEffect
+        delay(500)
+        withContext(Dispatchers.IO) {
+            try {
+                fetchLyricsIfMissing(context, database, metadata)
+            } catch (_: Exception) {
+                // A failed fetch can be retried when the track is played again or from the menu.
+            }
+        }
+    }
 
     // Default changed from SliderStyle.DEFAULT to SLIM so the main player's progress bar matches
     // the thumbless, simpler bar used on the lyrics page out of the box. Users can still switch
@@ -370,19 +394,6 @@ fun BottomSheetPlayer(
     val castPosition by castHandler?.castPosition?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) }
     val castDuration by castHandler?.castDuration?.collectAsStateWithLifecycle() ?: remember { mutableLongStateOf(0L) }
     val castIsPlaying by castHandler?.castIsPlaying?.collectAsState() ?: remember { mutableStateOf(false) }
-
-    val focusRequester = remember { FocusRequester() }
-
-    LaunchedEffect(state.isExpanded) {
-        if (state.isExpanded) {
-            delay(100)
-            try {
-                focusRequester.requestFocus()
-            } catch (e: Exception) {
-                // Ignore if focus request fails
-            }
-        }
-    }
 
     // Use Cast state when casting, otherwise local player
     val effectiveIsPlaying = if (isCasting) castIsPlaying else isPlaying
@@ -708,7 +719,8 @@ fun BottomSheetPlayer(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (isAtDefault) {
-                            FilledIconButton(
+                            Button(
+                                modifier = Modifier.weight(1f).height(48.dp),
                                 onClick = {
                                     scope.launch {
                                         context.safeDataStoreEdit { settings ->
@@ -721,7 +733,7 @@ fun BottomSheetPlayer(
                                         Toast.LENGTH_SHORT,
                                     ).show()
                                 },
-                                colors = IconButtonDefaults.filledIconButtonColors(
+                                colors = ButtonDefaults.buttonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
                                     contentColor = MaterialTheme.colorScheme.onPrimary,
                                 ),
@@ -729,7 +741,8 @@ fun BottomSheetPlayer(
                                 Text(stringResource(R.string.set_as_default))
                             }
                         } else {
-                            OutlinedIconButton(
+                            OutlinedButton(
+                                modifier = Modifier.weight(1f).height(48.dp),
                                 onClick = {
                                     scope.launch {
                                         context.safeDataStoreEdit { settings ->
@@ -747,7 +760,8 @@ fun BottomSheetPlayer(
                             }
                         }
 
-                        OutlinedIconButton(
+                        OutlinedButton(
+                            modifier = Modifier.weight(1f).height(48.dp),
                             onClick = {
                                 showSleepTimerDialog = false
                                 playerConnection.service.sleepTimer?.start(minute = -1)
@@ -884,15 +898,15 @@ fun BottomSheetPlayer(
         }
 
     val backgroundAlpha = state.progress.coerceIn(0f, 1f)
-    val backgroundRotation by rememberInfiniteTransition(label = "playerBackgroundMotion").animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 16000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "playerBackgroundRotation",
-    )
+    var backgroundRotation by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(Unit) {
+        // Update the color-wash transform at ~18fps instead of on every display frame. This
+        // keeps the blurred background moving while leaving more GPU time for video artwork.
+        while (isActive) {
+            delay(56L)
+            backgroundRotation = (backgroundRotation + 1.26f) % 360f
+        }
+    }
 
     BottomSheet(
         state = state,
@@ -907,7 +921,7 @@ fun BottomSheetPlayer(
                 when (playerBackground) {
                     PlayerBackgroundStyle.BLUR -> {
                         AnimatedContent(
-                            targetState = mediaMetadata?.thumbnailUrl,
+                            targetState = offlineArtwork?.toString() ?: mediaMetadata?.thumbnailUrl,
                             transitionSpec = {
                                 fadeIn(tween(800)).togetherWith(fadeOut(tween(800)))
                             },
@@ -1845,7 +1859,7 @@ fun BottomSheetPlayer(
                             ResizableIconButton(
                                 icon = if (effectiveIsPlaying) R.drawable.pause else R.drawable.play,
                                 color = TextBackgroundColor,
-                                modifier = Modifier.size(64.dp).focusRequester(focusRequester),
+                                modifier = Modifier.size(64.dp),
                                 onClick = {
                                     if (isGuestWithControl) {
                                         listenTogetherManager?.sendGuestCommand("TOGGLE_PLAY")
@@ -2373,28 +2387,38 @@ fun BottomSheetPlayer(
 
                     // On a phone, keep metadata and transport controls below the lyrics
                     // viewport so the auto-hidden bottom bar does not crowd the next lines.
-                    Spacer(
-                        Modifier.height(
-                            when {
-                                isCompactPhone && showInlineLyrics && isFullScreen -> 0.dp
-                                isCompactPhone && showInlineLyrics -> 12.dp
-                                !showInlineLyrics -> {
-                                    // Preserve the requested 10% breathing room on tall
-                                    // portrait windows (18:9), but reclaim it progressively as
-                                    // the window becomes shorter (down to 0dp at 16:9) so the
-                                    // lower controls remain visible without shrinking artwork.
-                                    val windowRatio =
-                                        configuration.screenHeightDp.toFloat() /
-                                            configuration.screenWidthDp.coerceAtLeast(1).toFloat()
-                                    val ratioProgress =
-                                        ((windowRatio - (16f / 9f)) / (2f - (16f / 9f)))
-                                            .coerceIn(0f, 1f)
-                                    configuration.screenHeightDp.dp * 0.1f * ratioProgress
-                                }
-                                else -> 12.dp
-                            },
-                        ),
-                    )
+                    if (!showInlineLyrics) {
+                        // Reuse the existing adaptive 10% gap. On tall portrait windows,
+                        // part of it displays the active lyric; on short windows it remains
+                        // a plain spacer so the controls can reclaim the same space as before.
+                        val windowRatio =
+                            configuration.screenHeightDp.toFloat() /
+                                configuration.screenWidthDp.coerceAtLeast(1).toFloat()
+                        val ratioProgress =
+                            ((windowRatio - (16f / 9f)) / (2f - (16f / 9f)))
+                                .coerceIn(0f, 1f)
+                        val portraitArtworkGap = configuration.screenHeightDp.dp * 0.1f * ratioProgress
+                        val lyricSlotHeight = 40.dp
+
+                        if (portraitArtworkGap >= 56.dp) {
+                            PortraitActiveLyricLine(
+                                position = effectivePosition,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(lyricSlotHeight)
+                                    .padding(horizontal = PlayerHorizontalPadding),
+                            )
+                            Spacer(Modifier.height((portraitArtworkGap - lyricSlotHeight).coerceAtLeast(0.dp)))
+                        } else {
+                            Spacer(Modifier.height(portraitArtworkGap))
+                        }
+                    } else {
+                        Spacer(
+                            Modifier.height(
+                                if (isCompactPhone && isFullScreen) 0.dp else 12.dp,
+                            ),
+                        )
+                    }
 
                     mediaMetadata?.let {
                         Column {
@@ -2493,6 +2517,40 @@ private fun LyricsFloatingMoreButton(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
+private fun PortraitActiveLyricLine(
+    position: Long,
+    modifier: Modifier = Modifier,
+) {
+    val playerConnection = LocalPlayerConnection.current ?: return
+    val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
+    val entries = remember(currentLyrics) {
+        currentLyrics?.lyrics
+            ?.takeUnless { it.isBlank() || it == LyricsEntity.LYRICS_NOT_FOUND }
+            ?.let(LyricsUtils::parseLyrics)
+            .orEmpty()
+    }
+    val activeLine = entries.lastOrNull { it.time <= position } ?: entries.firstOrNull()
+    val lyricText = activeLine?.text?.trim().orEmpty()
+
+    if (lyricText.isNotBlank()) {
+        Text(
+            text = lyricText,
+            modifier = modifier,
+            // Keep the inline lyric readable and visually consistent across device themes.
+            // Using onSurface here made it dark on light-themed phone/AVD screens while WSA
+            // rendered it light because its surface palette was different.
+            color = Color.White.copy(alpha = 0.78f),
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
 fun InlineLyricsView(
     mediaMetadata: MediaMetadata?,
     showLyrics: Boolean,
@@ -2506,6 +2564,13 @@ fun InlineLyricsView(
     val queueWindows by playerConnection.queueWindows.collectAsStateWithLifecycle(initialValue = emptyList())
     val currentWindowIndex by playerConnection.currentWindowIndex.collectAsStateWithLifecycle(initialValue = -1)
     val lyrics = remember(currentLyrics) { currentLyrics?.lyrics?.trim() }
+    val lyricsTextSizeState = key(isLandscape) {
+        rememberPreference(
+            if (isLandscape) LyricsTextSizeLandscapeKey else LyricsTextSizeKey,
+            24f,
+        )
+    }
+    val lyricsTextSize by lyricsTextSizeState
     val context = LocalContext.current
     val database = LocalDatabase.current
     val coroutineScope = rememberCoroutineScope()
@@ -2626,11 +2691,16 @@ fun InlineLyricsView(
                 ProvideTextStyle(
                     value =
                         MaterialTheme.typography.bodyMedium.copy(
-                            fontSize = when {
-                                isLandscape && isCompactPhone -> 24.sp
-                                isLandscape -> 48.sp
-                                else -> 14.sp
-                            },
+                            // Keep each form factor's existing default, then scale it from
+                            // the shared 24sp preference so the slider is centered at the
+                            // current default on every device.
+                            fontSize = (
+                                when {
+                                    isLandscape && isCompactPhone -> 24f
+                                    isLandscape -> 48f
+                                    else -> 14f
+                                } * (lyricsTextSize / 24f)
+                            ).sp,
                             textAlign = TextAlign.Center,
                         ),
                 ) {
@@ -2851,9 +2921,11 @@ private fun PlayerMoreMenuButton(
     textButtonColor: Color,
     iconButtonColor: Color,
 ) {
-    val navController = LocalNavController.current
+    val playerConnection = LocalPlayerConnection.current ?: return
     val menuState = LocalMenuState.current
     val bottomSheetPageState = LocalBottomSheetPageState.current
+    val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
+    val currentSong by playerConnection.currentSong.collectAsStateWithLifecycle(initialValue = null)
 
     Box(
         contentAlignment = Alignment.Center,
@@ -2864,17 +2936,16 @@ private fun PlayerMoreMenuButton(
                 .background(textButtonColor)
                 .clickable {
                     menuState.show {
-                        PlayerMenu(
-                            mediaMetadata = mediaMetadata,
-                            playerBottomSheetState = state,
-                            onShowDetailsDialog = {
-                                mediaMetadata.id.let {
-                                    bottomSheetPageState.show {
-                                        ShowMediaInfo(it)
-                                    }
+                        com.recordlabs.music.ui.menu.LyricsMenu(
+                            lyricsProvider = { currentLyrics },
+                            songProvider = { currentSong?.song },
+                            mediaMetadataProvider = { mediaMetadata },
+                            onDismiss = menuState::dismiss,
+                            onShowOffsetDialog = {
+                                bottomSheetPageState.show {
+                                    ShowOffsetDialog(songProvider = { currentSong?.song })
                                 }
                             },
-                            onDismiss = menuState::dismiss,
                         )
                     }
                 },

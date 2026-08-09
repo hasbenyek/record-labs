@@ -28,6 +28,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -86,7 +87,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -202,6 +206,7 @@ import com.recordlabs.music.widget.PlaylistWidgetReceiver
 import com.valentinilk.shimmer.LocalShimmerTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -943,6 +948,18 @@ class MainActivity : ComponentActivity() {
                     LocalSyncUtils provides syncUtils,
                     LocalListenTogetherManager provides listenTogetherManager,
                 ) {
+                    val appKeyboardFocusRequester = remember { FocusRequester() }
+                    val currentRoute = navBackStackEntry?.destination?.route.orEmpty()
+
+                    LaunchedEffect(currentRoute) {
+                        // Search and other text-entry routes manage their own focus. For every
+                        // other page, keep the app root ready to receive external keyboard keys.
+                        if (!currentRoute.contains("search", ignoreCase = true)) {
+                            delay(100)
+                            runCatching { appKeyboardFocusRequester.requestFocus() }
+                        }
+                    }
+
                     Scaffold(
                         snackbarHost = { SnackbarHost(snackbarHostState) },
                         topBar = {
@@ -1155,6 +1172,20 @@ class MainActivity : ComponentActivity() {
                         modifier =
                             Modifier
                                 .fillMaxSize()
+                                .focusRequester(appKeyboardFocusRequester)
+                                .focusable()
+                                .onKeyEvent { event ->
+                                    if (
+                                        event.nativeKeyEvent.action == android.view.KeyEvent.ACTION_DOWN &&
+                                        event.nativeKeyEvent.keyCode == android.view.KeyEvent.KEYCODE_SPACE &&
+                                        event.nativeKeyEvent.repeatCount == 0
+                                    ) {
+                                        playerConnection?.togglePlayPause()
+                                        playerConnection != null
+                                    } else {
+                                        false
+                                    }
+                                }
                                 .nestedScroll(topAppBarScrollBehavior.nestedScrollConnection),
                     ) {
                         Row(Modifier.fillMaxSize()) {

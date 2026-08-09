@@ -80,6 +80,7 @@ import com.recordlabs.music.constants.PlayerHorizontalPadding
 import com.recordlabs.music.constants.SeekExtraSeconds
 import com.recordlabs.music.constants.SwipeThumbnailKey
 import com.recordlabs.music.constants.ThumbnailCornerRadius
+import com.recordlabs.music.extensions.metadata
 import com.recordlabs.music.listentogether.RoomRole
 import com.recordlabs.music.ui.component.CastButton
 import com.recordlabs.music.utils.rememberEnumPreference
@@ -577,6 +578,51 @@ private fun ThumbnailItem(
             item.mediaMetadata.artworkUri?.toString()
         }
 
+        val playerCurrentMediaId = playerConnection.player.currentMediaItem?.mediaId
+        val isCurrentItem = item.mediaId == currentMediaId || item.mediaId == playerCurrentMediaId
+        var playerDurationSeconds by remember(item.mediaId, isCurrentItem) { mutableIntStateOf(0) }
+
+        // Recommendation results can enter the player before their metadata has been fully
+        // hydrated. In that state the queue item often has no duration, while ExoPlayer learns
+        // it shortly after playback starts. Poll only the current item so animated-artwork lookup
+        // gets retriggered as soon as the real duration becomes available.
+        LaunchedEffect(item.mediaId, isCurrentItem) {
+            if (!isCurrentItem) {
+                playerDurationSeconds = 0
+                return@LaunchedEffect
+            }
+
+            repeat(20) {
+                val durationMs = playerConnection.player.duration
+                if (durationMs != C.TIME_UNSET && durationMs > 0L) {
+                    playerDurationSeconds = (durationMs / 1000L).toInt()
+                    return@LaunchedEffect
+                }
+                delay(300L)
+            }
+        }
+
+        val queuedMetadata = item.metadata
+        val fallbackSong =
+            queuedMetadata?.title?.takeUnless { it.isBlank() }
+                ?: item.mediaMetadata.title?.toString().orEmpty()
+        val fallbackArtist =
+            queuedMetadata?.artists?.firstOrNull()?.name?.takeUnless { it.isBlank() }
+                ?: item.mediaMetadata.artist?.toString().orEmpty()
+        val fallbackAlbum =
+            queuedMetadata?.album?.title?.takeUnless { it.isBlank() }
+                ?: item.mediaMetadata.albumTitle?.toString().orEmpty()
+        val queuedDurationSeconds = queuedMetadata?.duration?.takeIf { it > 0 }
+        val animatedSong = activeMediaMetadata?.title?.takeUnless { it.isBlank() } ?: fallbackSong
+        val animatedArtist =
+            activeMediaMetadata?.artists?.firstOrNull()?.name?.takeUnless { it.isBlank() }
+                ?: fallbackArtist
+        val animatedAlbum = activeMediaMetadata?.album?.title?.takeUnless { it.isBlank() } ?: fallbackAlbum
+        val animatedDuration =
+            activeMediaMetadata?.duration?.takeIf { it > 0 }
+                ?: queuedDurationSeconds
+                ?: playerDurationSeconds
+
         // Real image aspect ratio, reported by ThumbnailImage once the artwork loads.
         // Sizing the card itself to this ratio (instead of forcing a fixed square and
         // fitting the image inside it) is what removes the leftover letterbox border,
@@ -610,12 +656,13 @@ private fun ThumbnailItem(
             } else {
                 ThumbnailImage(
                     artworkUri = artworkUriToUse,
+                    animatedArtworkMediaId = item.mediaId,
                     cropArtwork = cropAlbumArt,
-                    animatedArtworkEnabled = animatedArtworkEnabled && item.mediaId == currentMediaId && activeMediaMetadata?.id == item.mediaId,
-                    animatedArtworkSong = activeMediaMetadata?.title.orEmpty(),
-                    animatedArtworkArtist = activeMediaMetadata?.artists?.firstOrNull()?.name.orEmpty(),
-                    animatedArtworkDurationSeconds = activeMediaMetadata?.duration ?: 0,
-                    animatedArtworkAlbum = activeMediaMetadata?.album?.title.orEmpty(),
+                    animatedArtworkEnabled = animatedArtworkEnabled && isCurrentItem,
+                    animatedArtworkSong = animatedSong,
+                    animatedArtworkArtist = animatedArtist,
+                    animatedArtworkDurationSeconds = animatedDuration,
+                    animatedArtworkAlbum = animatedAlbum,
                     onAspectRatioChanged = { imageAspectRatio = it }
                 )
             }
@@ -665,6 +712,7 @@ private fun HiddenThumbnailPlaceholder(
 @Composable
 private fun ThumbnailImage(
     artworkUri: String?,
+    animatedArtworkMediaId: String,
     cropArtwork: Boolean,
     animatedArtworkEnabled: Boolean,
     animatedArtworkSong: String,
@@ -688,6 +736,7 @@ private fun ThumbnailImage(
     ) {
         AnimatedArtwork(
             artworkUri = artworkUri,
+            mediaId = animatedArtworkMediaId,
             song = animatedArtworkSong,
             artist = animatedArtworkArtist,
             durationSeconds = animatedArtworkDurationSeconds,

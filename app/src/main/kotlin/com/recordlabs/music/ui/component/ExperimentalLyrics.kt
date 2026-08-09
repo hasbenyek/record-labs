@@ -8,6 +8,7 @@ package com.recordlabs.music.ui.component
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.res.Configuration
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -43,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -97,6 +99,8 @@ import com.recordlabs.music.constants.LyricsClickKey
 import com.recordlabs.music.constants.LyricsRomanizeAsMainKey
 import com.recordlabs.music.constants.LyricsRomanizeCyrillicByLineKey
 import com.recordlabs.music.constants.LyricsRomanizeList
+import com.recordlabs.music.constants.LyricsTextSizeKey
+import com.recordlabs.music.constants.LyricsTextSizeLandscapeKey
 import com.recordlabs.music.constants.LyricsTextPositionKey
 import com.recordlabs.music.constants.OpenRouterApiKey
 import com.recordlabs.music.constants.OpenRouterBaseUrlKey
@@ -172,6 +176,26 @@ fun ExperimentalLyrics(
     val romanizeCyrillicByLine by rememberPreference(LyricsRomanizeCyrillicByLineKey, false)
     val respectAgentPositioning by rememberPreference(RespectAgentPositioningKey, true)
     val showIntervalIndicator by rememberPreference(ShowIntervalIndicatorKey, true)
+    val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+    val lyricsTextSizeState = key(isPortrait) {
+        rememberPreference(
+            if (isPortrait) LyricsTextSizeKey else LyricsTextSizeLandscapeKey,
+            24f,
+        )
+    }
+    val lyricsTextSize by lyricsTextSizeState
+    val lyricsLineSpacing = if (lyricsTextSize < 24f) {
+        // Reduce the extra vertical gap progressively below the default size while
+        // preserving the current spacing at 24sp and above.
+        (1.3f * (lyricsTextSize / 24f)).coerceAtLeast(1f)
+    } else {
+        1.3f
+    }
+    val lyricsItemGapDp = if (lyricsTextSize < 24f) {
+        (LYRICS_ITEM_GAP_DP * (lyricsTextSize / 24f)).coerceAtLeast(4.dp)
+    } else {
+        LYRICS_ITEM_GAP_DP
+    }
     
     // AI Translation Preferences
     val openRouterApiKey by rememberPreference(OpenRouterApiKey, "")
@@ -483,7 +507,7 @@ fun ExperimentalLyrics(
     var flingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     val velocityTracker = remember { VelocityTracker() }
     val decayAnimSpec = remember { exponentialDecay<Float>(frictionMultiplier = 1.8f) }
-    val itemHeights = remember(lyrics, mergedLyricsList) { mutableStateMapOf<Int, Int>() }
+    val itemHeights = remember(lyrics, mergedLyricsList, lyricsTextSize) { mutableStateMapOf<Int, Int>() }
     var isInitialLayout by remember(lyrics, mergedLyricsList) { mutableStateOf(true) }
 
     val activeListIndex by remember(mergedLyricsList, deferredCurrentLineIndex) {
@@ -514,7 +538,7 @@ fun ExperimentalLyrics(
         // Use a more permissive fallback for constraints to prevent "locks" if items are not measured yet
         val constraintLineHeightPx = with(density) { 120.dp.toPx() }
 
-        val positions = remember(itemHeights.toMap(), activeListIndex, mergedLyricsList) {
+        val positions = remember(itemHeights.toMap(), activeListIndex, mergedLyricsList, lyricsItemGapDp) {
             val map = mutableMapOf<Int, Float>()
             if (activeListIndex == -1 || mergedLyricsList.isEmpty()) return@remember map
             
@@ -524,7 +548,7 @@ fun ExperimentalLyrics(
                 val item = mergedLyricsList[i]
                 val height = itemHeights[i]?.toFloat() ?: (if (item is LyricsListItem.Indicator) indicatorHeightPx else lineHeightPx)
                 val noGap = (item as? LyricsListItem.Line)?.entry?.isBackground == true || item is LyricsListItem.Indicator
-                currentY -= (height + if (noGap) 0f else with(density) { LYRICS_ITEM_GAP_DP.toPx() })
+                currentY -= (height + if (noGap) 0f else with(density) { lyricsItemGapDp.toPx() })
                 map[i] = currentY
             }
             currentY = 0f
@@ -533,42 +557,23 @@ fun ExperimentalLyrics(
                 val nextItem = mergedLyricsList[i + 1]
                 val height = itemHeights[i]?.toFloat() ?: (if (currentItem is LyricsListItem.Indicator) indicatorHeightPx else lineHeightPx)
                 val nextNoGap = (nextItem as? LyricsListItem.Line)?.entry?.isBackground == true || nextItem is LyricsListItem.Indicator
-                currentY += (height + if (nextNoGap) 0f else with(density) { LYRICS_ITEM_GAP_DP.toPx() })
+                currentY += (height + if (nextNoGap) 0f else with(density) { lyricsItemGapDp.toPx() })
                 map[i + 1] = currentY
             }
             map
         }
 
-        val minOffset = remember(itemHeights.toMap(), mergedLyricsList, activeListIndex, anchorY) {
-            if (mergedLyricsList.isEmpty() || activeListIndex == -1) return@remember 0f
-            val totalBelow = (activeListIndex until mergedLyricsList.size - 1).sumOf { i ->
-                val currentItem = mergedLyricsList[i]
-                val nextItem = mergedLyricsList[i + 1]
-                val height = itemHeights[i]?.toFloat() ?: (if (currentItem is LyricsListItem.Indicator) indicatorHeightPx else constraintLineHeightPx)
-                val nextNoGap = (nextItem as? LyricsListItem.Line)?.entry?.isBackground == true || nextItem is LyricsListItem.Indicator
-                (height + if (nextNoGap) 0f else with(density) { LYRICS_ITEM_GAP_DP.toPx() }).toDouble()
-            }.toFloat()
-            val lastItem = mergedLyricsList.last()
-            val lastHeight = itemHeights[mergedLyricsList.size - 1]?.toFloat() ?: (if (lastItem is LyricsListItem.Indicator) indicatorHeightPx else constraintLineHeightPx)
-            with(density) { 100.dp.toPx() } - anchorY - totalBelow - lastHeight
-        }
-
-        val maxOffset = remember(itemHeights.toMap(), mergedLyricsList, activeListIndex, maxHeightPx, anchorY) {
-            if (mergedLyricsList.isEmpty() || activeListIndex == -1) return@remember 0f
-            val totalAbove = (0 until activeListIndex).sumOf { i ->
-                val item = mergedLyricsList[i]
-                val height = itemHeights[i]?.toFloat() ?: (if (item is LyricsListItem.Indicator) indicatorHeightPx else constraintLineHeightPx)
-                val noGap = (item as? LyricsListItem.Line)?.entry?.isBackground == true || item is LyricsListItem.Indicator
-                (height + if (noGap) 0f else with(density) { LYRICS_ITEM_GAP_DP.toPx() }).toDouble()
-            }.toFloat()
-            maxHeightPx - with(density) { 150.dp.toPx() } - anchorY + totalAbove
-        }
-
-        // Clamp to real content bounds only. minOffset/maxOffset already use conservative height
-        // fallbacks (constraintLineHeightPx) for items not yet measured; a large buffer here caused
-        // effectively unbounded overscroll away from the lyrics.
-        val scrollClampMin = minOf(minOffset, maxOffset)
-        val scrollClampMax = maxOf(minOffset, maxOffset)
+        // The scroll range is derived directly from the first and last rendered positions.
+        // The previous range calculation was relative to the active line and could collapse
+        // after playback reached the end, preventing a manual drag all the way back to line 1.
+        val firstPosition = positions[0] ?: 0f
+        val lastPosition = positions[mergedLyricsList.lastIndex] ?: 0f
+        val contentExtent = abs(lastPosition - firstPosition)
+        // Keep the complete content range available in both directions. The active line
+        // changes during playback, so using only one side of its relative offset can make
+        // the opposite drag direction appear locked at the edge.
+        val scrollClampMin = -contentExtent
+        val scrollClampMax = contentExtent
 
         LaunchedEffect(scrollClampMin, scrollClampMax) {
             if (userManualOffset < scrollClampMin || userManualOffset > scrollClampMax) {
@@ -794,7 +799,9 @@ fun ExperimentalLyrics(
                                         bgVisible = bgVisible, isSelected = selectedIndices.contains(index),
                                         isSelectionModeActive = isSelectionModeActive, currentPositionState = currentPositionStateHolder,
                                         lyricsOffset = (currentSong?.song?.lyricsOffset ?: 0).toLong(),
-                                        playerConnection = playerConnection, lyricsTextSize = 36f, lyricsLineSpacing = 1.3f,
+                                        playerConnection = playerConnection,
+                                        lyricsTextSize = 36f * (lyricsTextSize / 24f),
+                                        lyricsLineSpacing = lyricsLineSpacing,
                                         expressiveAccent = expressiveAccent, lyricsTextPosition = lyricsTextPosition,
                                         respectAgentPositioning = respectAgentPositioning, isAutoScrollEnabled = isAutoScrollEnabled,
                                         displayedCurrentLineIndex = deferredCurrentLineIndex, romanizeAsMain = romanizeAsMain,

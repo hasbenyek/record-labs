@@ -37,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -45,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -88,6 +90,8 @@ import com.recordlabs.music.constants.OpenRouterDefaultBaseUrl
 import com.recordlabs.music.constants.OpenRouterDefaultModel
 import com.recordlabs.music.constants.OpenRouterModelKey
 import com.recordlabs.music.constants.DeeplFormalityKey
+import com.recordlabs.music.constants.LyricsTextSizeKey
+import com.recordlabs.music.constants.LyricsTextSizeLandscapeKey
 import com.recordlabs.music.utils.rememberPreference
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -102,6 +106,8 @@ fun LyricsMenu(
 ) {
     val context = LocalContext.current
     val database = LocalDatabase.current
+    val configuration = LocalConfiguration.current
+    val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
     
     val openRouterApiKey by rememberPreference(OpenRouterApiKey, "")
     val deeplApiKey by rememberPreference(DeeplApiKey, "")
@@ -113,6 +119,13 @@ fun LyricsMenu(
     val deeplFormality by rememberPreference(DeeplFormalityKey, "default")
     var respectAgentPositioning by rememberPreference(RespectAgentPositioningKey, true)
     var showIntervalIndicator by rememberPreference(ShowIntervalIndicatorKey, true)
+    val lyricsTextSizeState = key(isPortrait) {
+        rememberPreference(
+            if (isPortrait) LyricsTextSizeKey else LyricsTextSizeLandscapeKey,
+            24f,
+        )
+    }
+    var lyricsTextSize by lyricsTextSizeState
 
     val hasApiKey = if (aiProvider == "DeepL") deeplApiKey.isNotBlank() else openRouterApiKey.isNotBlank()
     
@@ -380,9 +393,6 @@ fun LyricsMenu(
         lyricsOffset = songProvider()?.lyricsOffset ?: 0
     }
 
-    val configuration = LocalConfiguration.current
-    val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
-
     LazyColumn(
         contentPadding = PaddingValues(
             start = 0.dp,
@@ -538,6 +548,33 @@ fun LyricsMenu(
                             )
                         )
                     }
+
+                    add(
+                        Material3MenuItemData(
+                            title = { Text(stringResource(R.string.lyrics_text_size)) },
+                            description = { Text("${lyricsTextSize.toInt()} sp") },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.lyrics),
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = null,
+                            trailingContent = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Slider(
+                                        value = lyricsTextSize,
+                                        onValueChange = { lyricsTextSize = it },
+                                        valueRange = 12f..48f,
+                                        modifier = Modifier.width(160.dp),
+                                    )
+                                    TextButton(onClick = { lyricsTextSize = 24f }) {
+                                        Text(stringResource(R.string.reset))
+                                    }
+                                }
+                            },
+                        )
+                    )
                     
                     add(
                         Material3MenuItemData(

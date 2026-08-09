@@ -71,10 +71,13 @@ import com.recordlabs.music.constants.ThumbnailCornerRadius
 import com.recordlabs.music.db.entities.SpeedDialItem
 import com.recordlabs.music.db.entities.SongEntity
 import com.recordlabs.music.extensions.toMediaItem
+import com.recordlabs.music.lyrics.fetchLyricsIfMissing
 import com.recordlabs.music.models.MediaMetadata
 import com.recordlabs.music.models.toMediaMetadata
 import com.recordlabs.music.playback.ExoDownloadService
 import com.recordlabs.music.playback.queues.YouTubeQueue
+import com.recordlabs.music.ui.player.prefetchAnimatedArtwork
+import com.recordlabs.music.ui.player.prefetchStaticArtwork
 import com.recordlabs.music.ui.component.ListDialog
 import com.recordlabs.music.ui.component.LocalBottomSheetPageState
 import com.recordlabs.music.ui.component.Material3MenuGroup
@@ -632,12 +635,29 @@ fun YouTubeSongMenu(
                                         .setCustomCacheKey(song.id)
                                         .setData(song.title.toByteArray())
                                         .build()
-                                    DownloadService.sendAddDownload(
-                                        context,
-                                        ExoDownloadService::class.java,
-                                        downloadRequest,
-                                        false,
-                                    )
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        val metadata = song.toMediaMetadata()
+                                        runCatching { fetchLyricsIfMissing(context, database, metadata) }
+                                        runCatching {
+                                            prefetchStaticArtwork(context, metadata.id, metadata.thumbnailUrl)
+                                        }
+                                        runCatching {
+                                            prefetchAnimatedArtwork(
+                                                context = context,
+                                                mediaId = metadata.id,
+                                                song = metadata.title,
+                                                artist = metadata.artists.firstOrNull()?.name.orEmpty(),
+                                                durationSeconds = metadata.duration,
+                                                album = metadata.album?.title.orEmpty(),
+                                            )
+                                        }
+                                        DownloadService.sendAddDownload(
+                                            context,
+                                            ExoDownloadService::class.java,
+                                            downloadRequest,
+                                            false,
+                                        )
+                                    }
                                 }
                             )
                         }

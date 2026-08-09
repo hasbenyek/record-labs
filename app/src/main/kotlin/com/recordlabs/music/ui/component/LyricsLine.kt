@@ -144,6 +144,12 @@ internal fun LyricsLine(
 ) {
     val density = LocalDensity.current
     
+    val verticalLinePadding = if (lyricsTextSize < 36f) {
+        (12.dp * (lyricsTextSize / 36f)).coerceAtLeast(4.dp)
+    } else {
+        12.dp
+    }
+
     val itemModifier = modifier
         .fillMaxWidth()
         .onSizeChanged { onSizeChanged(it.height) }
@@ -156,8 +162,8 @@ internal fun LyricsLine(
         .padding(
             start = when (lyricsTextPosition) { LyricsPosition.LEFT, LyricsPosition.RIGHT -> 11.dp; LyricsPosition.CENTER -> 24.dp },
             end = when (lyricsTextPosition) { LyricsPosition.LEFT, LyricsPosition.RIGHT -> 11.dp; LyricsPosition.CENTER -> 24.dp },
-            top = if (item.isBackground) 0.dp else 12.dp,
-            bottom = if (item.isBackground) 2.dp else 12.dp // simplified gap logic
+            top = if (item.isBackground) 0.dp else verticalLinePadding,
+            bottom = if (item.isBackground) 2.dp else verticalLinePadding // responsive gap below default
         )
 
     val agentAlignment = when {

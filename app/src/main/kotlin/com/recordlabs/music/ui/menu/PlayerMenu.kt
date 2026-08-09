@@ -90,11 +90,15 @@ import com.recordlabs.music.constants.VarispeedKey
 import com.recordlabs.music.listentogether.ConnectionState
 import com.recordlabs.music.listentogether.ListenTogetherEvent
 import com.recordlabs.music.models.MediaMetadata
+import com.recordlabs.music.lyrics.fetchLyricsIfMissing
+import com.recordlabs.music.ui.player.prefetchAnimatedArtwork
+import com.recordlabs.music.ui.player.prefetchStaticArtwork
 import com.recordlabs.music.playback.ExoDownloadService
 import com.recordlabs.music.db.entities.Song
 import com.recordlabs.music.db.entities.SpeedDialItem
 import com.recordlabs.music.ui.component.BottomSheetState
 import com.recordlabs.music.ui.component.ListDialog
+import com.recordlabs.music.ui.component.LocalMenuState
 import com.recordlabs.music.ui.component.Material3MenuGroup
 import com.recordlabs.music.ui.component.Material3MenuItemData
 import com.recordlabs.music.ui.component.NewAction
@@ -120,6 +124,9 @@ fun PlayerMenu(
     val context = LocalContext.current
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current ?: return
+    val menuState = LocalMenuState.current
+    val currentLyrics by playerConnection.currentLyrics.collectAsStateWithLifecycle(initialValue = null)
+    val currentSong by playerConnection.currentSong.collectAsStateWithLifecycle(initialValue = null)
     val playerVolume = playerConnection.service.playerVolume.collectAsStateWithLifecycle()
 
     // Cast state for volume control - safely access castConnectionHandler to prevent crashes
@@ -411,6 +418,30 @@ fun PlayerMenu(
             Material3MenuGroup(
                 items =
                     buildList {
+                        add(
+                            Material3MenuItemData(
+                                title = { Text(text = stringResource(R.string.lyrics)) },
+                                description = { Text(text = stringResource(R.string.refetch)) },
+                                icon = {
+                                    Icon(
+                                        painter = painterResource(R.drawable.lyrics),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp),
+                                    )
+                                },
+                                onClick = {
+                                    onDismiss()
+                                    menuState.show {
+                                        LyricsMenu(
+                                            lyricsProvider = { currentLyrics },
+                                            songProvider = { currentSong?.song },
+                                            mediaMetadataProvider = { mediaMetadata },
+                                            onDismiss = menuState::dismiss,
+                                        )
+                                    }
+                                },
+                            ),
+                        )
                         // Don't show "View Artist" for podcasts - only show "View Podcast"
                         if (artists.isNotEmpty() && !isPodcast) {
                             add(
@@ -610,12 +641,31 @@ fun PlayerMenu(
                                                 .setCustomCacheKey(mediaMetadata.id)
                                                 .setData(mediaMetadata.title.toByteArray())
                                                 .build()
-                                        DownloadService.sendAddDownload(
-                                            context,
-                                            ExoDownloadService::class.java,
-                                            downloadRequest,
-                                            false,
-                                        )
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            // Finish both sidecar downloads before queueing the audio
+                                            // download, so taking the device offline cannot race the
+                                            // animated-artwork request.
+                                            runCatching { fetchLyricsIfMissing(context, database, mediaMetadata) }
+                                            runCatching {
+                                                prefetchStaticArtwork(context, mediaMetadata.id, mediaMetadata.thumbnailUrl)
+                                            }
+                                            runCatching {
+                                                prefetchAnimatedArtwork(
+                                                    context = context,
+                                                    mediaId = mediaMetadata.id,
+                                                    song = mediaMetadata.title,
+                                                    artist = mediaMetadata.artists.firstOrNull()?.name.orEmpty(),
+                                                    durationSeconds = mediaMetadata.duration,
+                                                    album = mediaMetadata.album?.title.orEmpty(),
+                                                )
+                                            }
+                                            DownloadService.sendAddDownload(
+                                                context,
+                                                ExoDownloadService::class.java,
+                                                downloadRequest,
+                                                false,
+                                            )
+                                        }
                                     },
                                 )
                             }
