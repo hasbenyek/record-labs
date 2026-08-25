@@ -31,6 +31,7 @@ import com.recordlabs.music.di.ApplicationScope
 import com.recordlabs.music.extensions.toEnum
 import com.recordlabs.music.extensions.toInetSocketAddress
 import com.recordlabs.music.utils.CrashHandler
+import com.recordlabs.music.utils.PlaybackRemoteConfig
 import com.recordlabs.music.utils.YTPlayerUtils
 import com.recordlabs.music.utils.cipher.CipherDeobfuscator
 import com.recordlabs.music.utils.dataStore
@@ -84,6 +85,10 @@ class App :
         // Plant logging BEFORE cipher init so the synchronous config-store load
         // (bundled asset + cached overlay) is captured, not just the async remote refresh.
         Timber.plant(Timber.DebugTree())
+
+        // Loads only a validated cached playback policy synchronously. Network refresh happens in
+        // the background and never blocks startup or an active stream.
+        PlaybackRemoteConfig.initialize(this, applicationScope)
 
         // Initialize cipher deobfuscator for WEB_REMIX streaming
         CipherDeobfuscator.initialize(this)

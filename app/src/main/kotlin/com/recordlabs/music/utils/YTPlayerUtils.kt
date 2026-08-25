@@ -26,8 +26,6 @@ import com.recordlabs.innertube.models.YouTubeClient.Companion.WEB_CREATOR
 import com.recordlabs.innertube.models.YouTubeClient.Companion.WEB_REMIX
 import com.recordlabs.innertube.models.response.PlayerResponse
 import com.recordlabs.music.constants.AudioQuality
-import com.recordlabs.music.utils.YTPlayerUtils.MAIN_CLIENT
-import com.recordlabs.music.utils.YTPlayerUtils.STREAM_FALLBACK_CLIENTS
 import com.recordlabs.music.utils.YTPlayerUtils.validateStatus
 import com.recordlabs.music.utils.cipher.CipherDeobfuscator
 import com.recordlabs.music.utils.cipher.FunctionNameExtractor
@@ -100,26 +98,43 @@ object YTPlayerUtils {
     // refresh never blocks falling through to the next client.
     private val cipherRefreshScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    private const val MAIN_CLIENT_ID = "WEB_REMIX"
     private val MAIN_CLIENT: YouTubeClient = WEB_REMIX
+
+    private data class StreamClientCandidate(
+        val id: String,
+        val client: YouTubeClient,
+    )
 
     // VISIONOS first (its CDN URL has no spc throttle gate, so it streams whole songs with no
     // poToken/cipher — the most reliable fallback), then WEB_CREATOR, TVHTML5, the ANDROID_VR
     // variants, then TVHTML5_SIMPLY_EMBEDDED_PLAYER (login-free, bypasses age-restriction for
     // logged-out users), then the spc-gated IOS/IPADOS as last-ditch attempts.
-    private val STREAM_FALLBACK_CLIENTS: Array<YouTubeClient> = arrayOf(
-        VISIONOS,
-        WEB_CREATOR,
-        TVHTML5,
-        ANDROID_VR_1_43_32,
-        ANDROID_VR_1_61_48,
-        TVHTML5_SIMPLY_EMBEDDED_PLAYER,
-        IOS,
-        IPADOS,
-        ANDROID_CREATOR,
-        ANDROID_VR_NO_AUTH,
-        MOBILE,
-        WEB,
+    private val STREAM_FALLBACK_CLIENTS: Map<String, YouTubeClient> = linkedMapOf(
+        "VISIONOS" to VISIONOS,
+        "WEB_CREATOR" to WEB_CREATOR,
+        "TVHTML5" to TVHTML5,
+        "ANDROID_VR_1_43_32" to ANDROID_VR_1_43_32,
+        "ANDROID_VR_1_61_48" to ANDROID_VR_1_61_48,
+        "TVHTML5_SIMPLY_EMBEDDED_PLAYER" to TVHTML5_SIMPLY_EMBEDDED_PLAYER,
+        "IOS" to IOS,
+        "IPADOS" to IPADOS,
+        "ANDROID_CREATOR" to ANDROID_CREATOR,
+        "ANDROID_VR_NO_AUTH" to ANDROID_VR_NO_AUTH,
+        "MOBILE" to MOBILE,
+        "WEB" to WEB,
     )
+
+    private fun resolveMainClient(policy: PlaybackRemoteConfig.Policy): YouTubeClient =
+        policy.applyClientOverride(MAIN_CLIENT_ID, MAIN_CLIENT)
+
+    private fun resolveFallbackClients(
+        policy: PlaybackRemoteConfig.Policy,
+    ): List<StreamClientCandidate> = policy.fallbackClientOrder.mapNotNull { id ->
+        STREAM_FALLBACK_CLIENTS[id]?.let { client ->
+            StreamClientCandidate(id, policy.applyClientOverride(id, client))
+        }
+    }
 
     /** Client names disabled by the user in Settings → Stream sources. Updated reactively by MusicService. */
     @Volatile
@@ -138,7 +153,8 @@ object YTPlayerUtils {
      */
     suspend fun prewarmPoToken() {
         val sessionId = YouTube.visitorData ?: return
-        if (!MAIN_CLIENT.useWebPoTokens) return
+        val mainClient = resolveMainClient(PlaybackRemoteConfig.currentPolicy())
+        if (!mainClient.useWebPoTokens) return
         runCatching {
             withContext(Dispatchers.IO) {
                 poTokenGenerator.getWebClientPoToken(POTOKEN_WARMUP_VIDEO_ID, sessionId)
@@ -185,9 +201,17 @@ object YTPlayerUtils {
         val isLoggedIn = !YouTube.cookie.isNullOrBlank()
         Timber.tag(TAG).d("Authentication status: ${if (isLoggedIn) "LOGGED_IN" else "ANONYMOUS"}")
 
+        // Snapshot once per resolution. A remote policy published while a song is playing can only
+        // affect the next resolution/retry, never the active stream.
+        val playbackPolicy = PlaybackRemoteConfig.currentPolicy()
+        val mainClient = resolveMainClient(playbackPolicy)
+        val fallbackClients = resolveFallbackClients(playbackPolicy)
+        Timber.tag(TAG).d("Playback policy revision=${playbackPolicy.revision}")
+
         // Public tracks deliberately resolve exactly like a logged-out session. Authentication is
         // still retained for uploaded/private and age-restricted content below.
-        val authenticateMainPlayback = isUploadedTrack && isLoggedIn
+        val authenticateMainPlayback = isLoggedIn &&
+            (isUploadedTrack || !playbackPolicy.forceAnonymousPublicPlayback)
         val playbackVisitorData = when {
             authenticateMainPlayback || !isLoggedIn -> YouTube.visitorData
             else -> anonymousPlaybackVisitor()
@@ -204,7 +228,7 @@ object YTPlayerUtils {
         // Generate PoToken
         var poToken: PoTokenResult? = null
         val sessionId = playbackVisitorData
-        if (MAIN_CLIENT.useWebPoTokens && sessionId != null) {
+        if (mainClient.useWebPoTokens && sessionId != null) {
             Timber.tag(logTag).d("Generating PoToken for WEB_REMIX with sessionId")
             try {
                 poToken = poTokenGenerator.getWebClientPoToken(videoId, sessionId)
@@ -217,11 +241,11 @@ object YTPlayerUtils {
         }
 
         // Try WEB_REMIX with signature timestamp and poToken (same as before)
-        Timber.tag(logTag).d("Attempting to get player response using MAIN_CLIENT: ${MAIN_CLIENT.clientName}")
+        Timber.tag(logTag).d("Attempting to get player response using MAIN_CLIENT: ${mainClient.clientName}")
         var mainPlayerResponse = YouTube.player(
             videoId = videoId,
             playlistId = playlistId,
-            client = MAIN_CLIENT,
+            client = mainClient,
             signatureTimestamp = signatureTimestamp.timestamp,
             poToken = poToken?.playerRequestPoToken,
             setLogin = authenticateMainPlayback,
@@ -249,10 +273,11 @@ object YTPlayerUtils {
             // Age-restricted: use WEB_CREATOR directly (no NewPipe needed from here)
             Timber.tag(logTag).d("Age-restricted detected, using WEB_CREATOR")
             Timber.tag(TAG).i("Age-restricted: using WEB_CREATOR for videoId=$videoId")
+            val ageRestrictedClient = playbackPolicy.applyClientOverride("WEB_CREATOR", WEB_CREATOR)
             val creatorResponse = YouTube.player(
                 videoId = videoId,
                 playlistId = playlistId,
-                client = WEB_CREATOR,
+                client = ageRestrictedClient,
                 signatureTimestamp = null,
                 poToken = null,
                 setLogin = true,
@@ -266,7 +291,7 @@ object YTPlayerUtils {
             if (creatorResponse?.playabilityStatus?.status == "OK") {
                 Timber.tag(logTag).d("WEB_CREATOR works for age-restricted content")
                 mainPlayerResponse = creatorResponse
-                usedAgeRestrictedClient = WEB_CREATOR
+                usedAgeRestrictedClient = ageRestrictedClient
             }
         }
 
@@ -299,7 +324,7 @@ object YTPlayerUtils {
             // the CDN even when the /player response itself is OK. VISIONOS returned a clean,
             // directly playable URL in the same session, so start with anonymous native-client
             // fallbacks for public tracks instead of waiting for Media3 to fail and retry.
-            isLoggedIn && !isUploadedTrack -> 0
+            isLoggedIn && !isUploadedTrack && playbackPolicy.preferFallbackWhenLoggedIn -> 0
             else -> -1
         }
 
@@ -312,7 +337,7 @@ object YTPlayerUtils {
 
         val hasHighQuality = mainPlayerResponse.streamingData?.adaptiveFormats?.any { it.audioQuality == "AUDIO_QUALITY_HIGH" } == true
 
-        for (clientIndex in (startIndex until STREAM_FALLBACK_CLIENTS.size)) {
+        for (clientIndex in (startIndex until fallbackClients.size)) {
             // reset for each client
             format = null
             streamUrl = null
@@ -322,8 +347,10 @@ object YTPlayerUtils {
             val client: YouTubeClient
             if (clientIndex == -1) {
                 // try with streams from main client first (use retry response if available)
-                client = MAIN_CLIENT
-                if (client.clientName in disabledStreamClients) {
+                client = mainClient
+                if (MAIN_CLIENT_ID in playbackPolicy.disabledClientIds ||
+                    client.clientName in disabledStreamClients
+                ) {
                     Timber.tag(logTag).d("Skipping MAIN_CLIENT ${client.clientName} — disabled in stream sources")
                     continue
                 }
@@ -331,15 +358,17 @@ object YTPlayerUtils {
                 Timber.tag(logTag).d("Trying stream from MAIN_CLIENT: ${client.clientName}")
             } else {
                 // after main client use fallback clients
-                client = STREAM_FALLBACK_CLIENTS[clientIndex]
-                Timber.tag(logTag).d("Trying fallback client ${clientIndex + 1}/${STREAM_FALLBACK_CLIENTS.size}: ${client.clientName}")
+                val candidate = fallbackClients[clientIndex]
+                client = candidate.client
+                Timber.tag(logTag).d("Trying fallback client ${clientIndex + 1}/${fallbackClients.size}: ${candidate.id}/${client.clientName}")
 
-                if (client.clientName in disabledStreamClients) {
+                if (candidate.id in playbackPolicy.disabledClientIds || client.clientName in disabledStreamClients) {
                     Timber.tag(logTag).d("Skipping client ${client.clientName} — disabled in stream sources")
                     continue
                 }
 
-                val authenticateFallback = isLoggedIn && (isUploadedTrack || wasOriginallyAgeRestricted)
+                val authenticateFallback = isLoggedIn &&
+                    (isUploadedTrack || wasOriginallyAgeRestricted || !playbackPolicy.forceAnonymousPublicPlayback)
                 if (client.loginRequired && !authenticateFallback) {
                     // skip client if it requires login but user is not logged in
                     Timber.tag(logTag).d("Skipping client ${client.clientName} - requires login but user is not logged in")
@@ -372,7 +401,7 @@ object YTPlayerUtils {
 
             // process current client response
             if (streamPlayerResponse?.playabilityStatus?.status == "OK") {
-                Timber.tag(logTag).d("Player response status OK for client: ${if (clientIndex == -1) MAIN_CLIENT.clientName else STREAM_FALLBACK_CLIENTS[clientIndex].clientName}")
+                Timber.tag(logTag).d("Player response status OK for client: ${client.clientName}")
 
                 // Skip NewPipe for age-restricted content (NewPipe doesn't use our auth)
                 val responseToUse = if (wasOriginallyAgeRestricted) {
@@ -388,7 +417,7 @@ object YTPlayerUtils {
                     audioConfig = responseToUse.playerConfig?.audioConfig
 
                     if (audioConfig != null) {
-                        Timber.tag(logTag).d("AudioConfig obtained from response of client: ${if (clientIndex == -1) MAIN_CLIENT.clientName else STREAM_FALLBACK_CLIENTS[clientIndex].clientName}")
+                        Timber.tag(logTag).d("AudioConfig obtained from response of client: ${client.clientName}")
                     } else {
                         Timber.tag(logTag).d("No audioConfig found in responseToUse.")
                     }
@@ -402,7 +431,7 @@ object YTPlayerUtils {
                     )
 
                 if (format == null) {
-                    Timber.tag(logTag).d("No suitable format found for client: ${if (clientIndex == -1) MAIN_CLIENT.clientName else STREAM_FALLBACK_CLIENTS[clientIndex].clientName}")
+                    Timber.tag(logTag).d("No suitable format found for client: ${client.clientName}")
                     continue
                 }
 
@@ -422,9 +451,9 @@ object YTPlayerUtils {
 
                 // Apply n-transform for throttle parameter handling
                 val currentClient = if (clientIndex == -1) {
-                    usedAgeRestrictedClient ?: MAIN_CLIENT
+                    usedAgeRestrictedClient ?: mainClient
                 } else {
-                    STREAM_FALLBACK_CLIENTS[clientIndex]
+                    fallbackClients[clientIndex].client
                 }
 
                 val musicVideoType = streamPlayerResponse.videoDetails?.musicVideoType
@@ -543,9 +572,9 @@ object YTPlayerUtils {
                     continue
                 }
 
-                if (clientIndex == STREAM_FALLBACK_CLIENTS.size - 1) {
+                if (clientIndex == fallbackClients.size - 1 && !playbackPolicy.validateLastFallback) {
                     /** skip [validateStatus] for last client */
-                    Timber.tag(logTag).d("Using last fallback client without validation: ${STREAM_FALLBACK_CLIENTS[clientIndex].clientName}")
+                    Timber.tag(logTag).d("Using last fallback client without validation: ${fallbackClients[clientIndex].client.clientName}")
                     Timber.tag(TAG)
                         .i("Playback: client=${currentClient.clientName}, videoId=$videoId")
                     successClient = currentClient.clientName
@@ -556,7 +585,8 @@ object YTPlayerUtils {
                 // GET that ExoPlayer makes. Skip HEAD validation for the main client and let ExoPlayer
                 // try directly, UNLESS this videoId already 403'd on GET (markWebRemixFailed) — then
                 // fall through to the fallback clients. Saves a validateStatus round-trip per resolve.
-                if (clientIndex == -1 && currentClient.clientName == "WEB_REMIX" &&
+                if (playbackPolicy.skipWebRemixHeadValidation &&
+                    clientIndex == -1 && currentClient.clientName == "WEB_REMIX" &&
                     !webRemixFailedIds.contains(videoId)
                 ) {
                     Timber.tag(logTag).d("WEB_REMIX — skipping HEAD validation, letting ExoPlayer try directly")
@@ -652,6 +682,7 @@ object YTPlayerUtils {
             streamClient = successClient ?: "unknown",
         )
     }.onFailure { e ->
+        PlaybackRemoteConfig.requestRefreshAfterPlaybackFailure()
         println("[PLAYBACK_DEBUG] EXCEPTION during playback for videoId=$videoId: ${e::class.simpleName}: ${e.message}")
         e.printStackTrace()
     }
@@ -663,16 +694,18 @@ object YTPlayerUtils {
         videoId: String,
         playlistId: String? = null,
     ): Result<PlayerResponse> {
-        Timber.tag(logTag).d("Fetching metadata player response for videoId: $videoId using MAIN_CLIENT: ${MAIN_CLIENT.clientName}")
+        val playbackPolicy = PlaybackRemoteConfig.currentPolicy()
+        val mainClient = resolveMainClient(playbackPolicy)
+        Timber.tag(logTag).d("Fetching metadata player response for videoId: $videoId using MAIN_CLIENT: ${mainClient.clientName}")
         val signatureTimestamp = getSignatureTimestampOrNull(videoId)
         val sessionId = YouTube.visitorData
         var poToken: PoTokenResult? = null
-        if (MAIN_CLIENT.useWebPoTokens && sessionId != null) {
+        if (mainClient.useWebPoTokens && sessionId != null) {
             try {
                 poToken = poTokenGenerator.getWebClientPoToken(videoId, sessionId)
             } catch (_: Exception) { }
         }
-        return YouTube.player(videoId, playlistId, WEB_REMIX, signatureTimestamp.timestamp, poToken?.playerRequestPoToken)
+        return YouTube.player(videoId, playlistId, mainClient, signatureTimestamp.timestamp, poToken?.playerRequestPoToken)
             .onSuccess { Timber.tag(logTag).d("Successfully fetched metadata player response") }
             .onFailure { Timber.tag(logTag).e(it, "Failed to fetch metadata player response") }
     }

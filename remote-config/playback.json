@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-08-25.1",
+  "enabled": true,
+  "expiresAtEpochSeconds": 0,
+  "minimumAppVersion": "1.9",
+  "fallbackClientOrder": [
+    "VISIONOS",
+    "WEB_CREATOR",
+    "TVHTML5",
+    "ANDROID_VR_1_43_32",
+    "ANDROID_VR_1_61_48",
+    "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+    "IOS",
+    "IPADOS",
+    "ANDROID_CREATOR",
+    "ANDROID_VR_NO_AUTH",
+    "MOBILE",
+    "WEB"
+  ],
+  "disabledClientIds": [],
+  "forceAnonymousPublicPlayback": true,
+  "preferFallbackWhenLoggedIn": true,
+  "skipWebRemixHeadValidation": true,
+  "validateLastFallback": false,
+  "clientOverrides": {}
+}
