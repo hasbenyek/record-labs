@@ -613,13 +613,18 @@ private fun ThumbnailItem(
             queuedMetadata?.album?.title?.takeUnless { it.isBlank() }
                 ?: item.mediaMetadata.albumTitle?.toString().orEmpty()
         val queuedDurationSeconds = queuedMetadata?.duration?.takeIf { it > 0 }
-        val animatedSong = activeMediaMetadata?.title?.takeUnless { it.isBlank() } ?: fallbackSong
+        // The metadata flow can briefly lag behind ExoPlayer during a track transition. Only use
+        // it when it belongs to this exact queue item; otherwise a newly displayed song could
+        // request the previous song's animated artwork.
+        val matchingActiveMetadata = activeMediaMetadata?.takeIf { it.id == item.mediaId }
+        val animatedSong = matchingActiveMetadata?.title?.takeUnless { it.isBlank() } ?: fallbackSong
         val animatedArtist =
-            activeMediaMetadata?.artists?.firstOrNull()?.name?.takeUnless { it.isBlank() }
+            matchingActiveMetadata?.artists?.firstOrNull()?.name?.takeUnless { it.isBlank() }
                 ?: fallbackArtist
-        val animatedAlbum = activeMediaMetadata?.album?.title?.takeUnless { it.isBlank() } ?: fallbackAlbum
+        val animatedAlbum =
+            matchingActiveMetadata?.album?.title?.takeUnless { it.isBlank() } ?: fallbackAlbum
         val animatedDuration =
-            activeMediaMetadata?.duration?.takeIf { it > 0 }
+            matchingActiveMetadata?.duration?.takeIf { it > 0 }
                 ?: queuedDurationSeconds
                 ?: playerDurationSeconds
 
@@ -658,7 +663,10 @@ private fun ThumbnailItem(
                     artworkUri = artworkUriToUse,
                     animatedArtworkMediaId = item.mediaId,
                     cropArtwork = cropAlbumArt,
-                    animatedArtworkEnabled = animatedArtworkEnabled && isCurrentItem,
+                    animatedArtworkEnabled = animatedArtworkEnabled &&
+                        isCurrentItem &&
+                        animatedSong.isNotBlank() &&
+                        animatedArtist.isNotBlank(),
                     animatedArtworkSong = animatedSong,
                     animatedArtworkArtist = animatedArtist,
                     animatedArtworkDurationSeconds = animatedDuration,
