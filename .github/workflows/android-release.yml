@@ -74,14 +74,22 @@ jobs:
         shell: bash
         run: |
           set +e
-          ./gradlew :app:assembleFossDebug --no-daemon --stacktrace 2>&1 | tee gradle-build.log
+          ./gradlew :app:assembleFossDebug \
+            --no-daemon \
+            --no-parallel \
+            --max-workers=2 \
+            -Dorg.gradle.jvmargs="-Xmx2560m -XX:+UseParallelGC -Dfile.encoding=UTF-8" \
+            -Pkotlin.daemon.jvm.options="-Xmx2048m" \
+            --stacktrace 2>&1 | tee gradle-build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           if [[ "$BUILD_STATUS" -ne 0 ]]; then
-            FAILURE_DETAILS="$(awk '
+            COMPILER_ERRORS="$(grep -E '(^e: |(^|[[:space:]])error:|Unresolved reference|Compilation error)' gradle-build.log | tail -n 50 || true)"
+            GRADLE_FAILURE="$(awk '
               /FAILURE: Build failed/ { capture = 1 }
               capture { print; lines++ }
-              lines == 40 { exit }
+              lines == 20 { exit }
             ' gradle-build.log)"
+            FAILURE_DETAILS="${COMPILER_ERRORS}${COMPILER_ERRORS:+$'\n\n'}${GRADLE_FAILURE}"
             if [[ -z "$FAILURE_DETAILS" ]]; then
               FAILURE_DETAILS="$(tail -n 40 gradle-build.log)"
             fi
