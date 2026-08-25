@@ -221,10 +221,10 @@ object PlaybackRemoteConfig {
             "Playback config expired"
         }
         document.minimumAppVersion?.let {
-            require(compareVersions(appVersion, it) >= 0) { "App version below policy minimum" }
+            require(compareVersionNames(appVersion, it) >= 0) { "App version below policy minimum" }
         }
         document.maximumAppVersion?.let {
-            require(compareVersions(appVersion, it) <= 0) { "App version above policy maximum" }
+            require(compareVersionNames(appVersion, it) <= 0) { "App version above policy maximum" }
         }
 
         if (!document.enabled) return Policy.DEFAULT.copy(revision = document.revision)
@@ -265,13 +265,4 @@ object PlaybackRemoteConfig {
         )
     }
 
-    private fun compareVersions(left: String, right: String): Int {
-        val leftParts = left.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
-        val rightParts = right.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
-        repeat(maxOf(leftParts.size, rightParts.size)) { index ->
-            val result = (leftParts.getOrNull(index) ?: 0).compareTo(rightParts.getOrNull(index) ?: 0)
-            if (result != 0) return result
-        }
-        return 0
-    }
 }

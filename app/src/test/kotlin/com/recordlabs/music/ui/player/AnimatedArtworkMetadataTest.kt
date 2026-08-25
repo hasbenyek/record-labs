@@ -52,7 +52,7 @@ class AnimatedArtworkMetadataTest {
     }
 
     @Test
-    fun selectsSquareHevcPlaylistWithoutAvcFallback() {
+    fun selectsHdSquareHevcPlaylistByDefaultWithoutAvcFallback() {
         val selected = selectCompatibleAppleHevcPlaylist(
             """
             #EXTM3U
@@ -67,7 +67,89 @@ class AnimatedArtworkMetadataTest {
             """.trimIndent(),
         )
 
+        assertEquals("https://mvod.itunes.apple.com/hevc-768.m3u8", selected)
+    }
+
+    @Test
+    fun selectsFhdSquareHevcPlaylistWhenAllowed() {
+        val selected = selectCompatibleAppleHevcPlaylist(
+            masterPlaylist = """
+                #EXTM3U
+                #EXT-X-STREAM-INF:CODECS="hvc1.2.20000000.L123.B0",RESOLUTION=768x768
+                https://mvod.itunes.apple.com/hevc-768.m3u8
+                #EXT-X-STREAM-INF:CODECS="hvc1.2.20000000.L123.B0",RESOLUTION=1080x1080
+                https://mvod.itunes.apple.com/hevc-1080.m3u8
+                #EXT-X-STREAM-INF:CODECS="hvc1.2.20000000.H150.B0",RESOLUTION=2160x2160
+                https://mvod.itunes.apple.com/hevc-2160.m3u8
+            """.trimIndent(),
+            maximumSize = 1080,
+        )
+
         assertEquals("https://mvod.itunes.apple.com/hevc-1080.m3u8", selected)
+    }
+
+    @Test
+    fun enablesFhdOnlyWhenDeviceAndNetworkAreCapable() {
+        assertTrue(
+            shouldUseFhdAnimatedArtwork(
+                hevcMaximumSize = 1080,
+                memoryClassMb = 512,
+                displayLongestEdge = 2400,
+                downstreamBandwidthKbps = 20_000,
+                networkValidated = true,
+                networkMetered = false,
+                lowRamDevice = false,
+                powerSaveMode = false,
+            ),
+        )
+    }
+
+    @Test
+    fun keepsHdWhenNetworkEstimateIsUnknown() {
+        assertFalse(
+            shouldUseFhdAnimatedArtwork(
+                hevcMaximumSize = 1080,
+                memoryClassMb = 512,
+                displayLongestEdge = 2400,
+                downstreamBandwidthKbps = 0,
+                networkValidated = true,
+                networkMetered = false,
+                lowRamDevice = false,
+                powerSaveMode = false,
+            ),
+        )
+    }
+
+    @Test
+    fun keepsHdWhenDecoderCannotRenderFhd() {
+        assertFalse(
+            shouldUseFhdAnimatedArtwork(
+                hevcMaximumSize = 768,
+                memoryClassMb = 512,
+                displayLongestEdge = 2400,
+                downstreamBandwidthKbps = 50_000,
+                networkValidated = true,
+                networkMetered = false,
+                lowRamDevice = false,
+                powerSaveMode = false,
+            ),
+        )
+    }
+
+    @Test
+    fun keepsHdForLowRamOrPowerSaveMode() {
+        assertFalse(
+            shouldUseFhdAnimatedArtwork(
+                hevcMaximumSize = 1080,
+                memoryClassMb = 256,
+                displayLongestEdge = 2400,
+                downstreamBandwidthKbps = 50_000,
+                networkValidated = true,
+                networkMetered = false,
+                lowRamDevice = true,
+                powerSaveMode = true,
+            ),
+        )
     }
 
     @Test

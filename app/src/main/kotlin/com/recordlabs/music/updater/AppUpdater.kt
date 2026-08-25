@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import com.recordlabs.music.BuildConfig
 import com.recordlabs.music.R
+import com.recordlabs.music.utils.compareVersionNames
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -68,7 +69,7 @@ object AppUpdater {
 
         if (release.draft || release.prerelease) return@withContext
         val latestVersion = release.tagName.removePrefix("v")
-        if (compareVersions(latestVersion, BuildConfig.VERSION_NAME) <= 0) return@withContext
+        if (compareVersionNames(latestVersion, BuildConfig.VERSION_NAME) <= 0) return@withContext
 
         val apk = release.assets.firstOrNull {
             it.name.endsWith(".apk", ignoreCase = true) &&
@@ -119,14 +120,4 @@ object AppUpdater {
         NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
     }
 
-    private fun compareVersions(left: String, right: String): Int {
-        val leftParts = left.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
-        val rightParts = right.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
-        repeat(maxOf(leftParts.size, rightParts.size)) { index ->
-            val comparison = (leftParts.getOrNull(index) ?: 0)
-                .compareTo(rightParts.getOrNull(index) ?: 0)
-            if (comparison != 0) return comparison
-        }
-        return 0
-    }
 }

@@ -7,7 +7,10 @@ package com.recordlabs.music.ui.player
 
 import android.app.ActivityManager
 import android.media.MediaCodecList
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.PowerManager
 import android.view.TextureView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -59,6 +62,12 @@ private const val ALLOWED_ANIMATED_ART_HOST = "mvod.itunes.apple.com"
 private const val ANIMATED_ARTWORK_LOOKUP_ATTEMPTS = 3
 private const val ANIMATED_ARTWORK_RETRY_DELAY_MS = 350L
 private const val ANIMATED_ARTWORK_CACHE_SCHEMA = "v5"
+private const val ANIMATED_ARTWORK_HD_SIZE = 768
+private const val ANIMATED_ARTWORK_FHD_SIZE = 1080
+private const val ANIMATED_ARTWORK_HD_AVC_MAX_EDGE = 1080
+private const val ANIMATED_ARTWORK_FHD_AVC_MAX_EDGE = 1440
+private const val ANIMATED_ARTWORK_FHD_MIN_BANDWIDTH_KBPS = 15_000
+private const val ANIMATED_ARTWORK_FHD_METERED_MIN_BANDWIDTH_KBPS = 25_000
 
 internal data class OfficialAppleArtwork(
     val album: String,
@@ -126,8 +135,11 @@ internal fun selectCompatibleAppleAvcPlaylist(masterPlaylist: String): String? {
         ?.third
 }
 
-/** Selects a square HEVC-only media playlist so Media3 cannot fall back to a bad AVC sibling. */
-internal fun selectCompatibleAppleHevcPlaylist(masterPlaylist: String): String? {
+/** Selects the sharpest square HEVC playlist within the requested quality ceiling. */
+internal fun selectCompatibleAppleHevcPlaylist(
+    masterPlaylist: String,
+    maximumSize: Int = ANIMATED_ARTWORK_HD_SIZE,
+): String? {
     val lines = masterPlaylist.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
     return lines.mapIndexedNotNull { index, line ->
         if (!line.startsWith("#EXT-X-STREAM-INF:", ignoreCase = true) ||
@@ -138,7 +150,7 @@ internal fun selectCompatibleAppleHevcPlaylist(masterPlaylist: String): String? 
         val resolution = appleHlsResolutionRegex.find(line) ?: return@mapIndexedNotNull null
         val width = resolution.groupValues[1].toIntOrNull() ?: return@mapIndexedNotNull null
         val height = resolution.groupValues[2].toIntOrNull() ?: return@mapIndexedNotNull null
-        if (width != height || width > 1080) return@mapIndexedNotNull null
+        if (width != height || width > maximumSize) return@mapIndexedNotNull null
         val uri = lines.drop(index + 1).firstOrNull { !it.startsWith("#") }
             ?: return@mapIndexedNotNull null
         Triple(width * height, width, uri)
@@ -225,48 +237,92 @@ private data class AnimatedArtworkAssets(
     val savedAt: Long,
     val downloadUrl: String? = null,
     val fallbackVideoUrl: String? = null,
+    val fhdVideoUrl: String? = null,
     val preferredVideoMimeType: String = MimeTypes.VIDEO_H264,
     val offlineMasterUrl: String? = null,
 )
 
-private fun hasHevcSquareDecoder(): Boolean = runCatching {
-    MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
-        !info.isEncoder && info.supportedTypes.any { it.equals(MimeTypes.VIDEO_H265, true) } &&
+private data class AnimatedArtworkQualityProfile(
+    val hevcMaximumSize: Int,
+    val useFhd: Boolean,
+    val avcMaximumSize: Int,
+)
+
+private fun hevcSquareDecoderMaximumSize(): Int = runCatching {
+    MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+        .asSequence()
+        .filter { info ->
+            !info.isEncoder && info.supportedTypes.any { it.equals(MimeTypes.VIDEO_H265, true) }
+        }
+        .mapNotNull { info ->
             runCatching {
-                val capabilities = info.getCapabilitiesForType(MimeTypes.VIDEO_H265)
-                capabilities.videoCapabilities?.isSizeSupported(1080, 1080) == true
-            }.getOrDefault(false)
-    }
-}.getOrDefault(false)
+                val capabilities = info.getCapabilitiesForType(MimeTypes.VIDEO_H265).videoCapabilities
+                    ?: return@runCatching null
+                when {
+                    capabilities.isSizeSupported(ANIMATED_ARTWORK_FHD_SIZE, ANIMATED_ARTWORK_FHD_SIZE) ->
+                        ANIMATED_ARTWORK_FHD_SIZE
+                    capabilities.isSizeSupported(ANIMATED_ARTWORK_HD_SIZE, ANIMATED_ARTWORK_HD_SIZE) ->
+                        ANIMATED_ARTWORK_HD_SIZE
+                    else -> null
+                }
+            }.getOrNull()
+        }
+        .maxOrNull() ?: 0
+}.getOrDefault(0)
 
-private fun adaptiveAnimatedArtworkMaxSize(context: android.content.Context): Int {
-    val avcDecoderLimit = runCatching {
-        MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
-            .asSequence()
-            .filter { !it.isEncoder && it.supportedTypes.any { type -> type.equals(MimeTypes.VIDEO_H264, true) } }
-            .mapNotNull { info ->
-                runCatching {
-                    info.getCapabilitiesForType(MimeTypes.VIDEO_H264)
-                        .videoCapabilities
-                        ?.supportedWidths
-                        ?.upper
-                }.getOrNull()
-            }
-            .maxOrNull()
-    }.getOrNull() ?: 768
-
-    val memoryClass = (context.getSystemService(ActivityManager::class.java))?.memoryClass ?: 2048
-    val memoryLimit = when {
-        memoryClass < 2048 -> 768
-        memoryClass < 4096 -> 1080
-        else -> 2160
+internal fun shouldUseFhdAnimatedArtwork(
+    hevcMaximumSize: Int,
+    memoryClassMb: Int,
+    displayLongestEdge: Int,
+    downstreamBandwidthKbps: Int,
+    networkValidated: Boolean,
+    networkMetered: Boolean,
+    lowRamDevice: Boolean,
+    powerSaveMode: Boolean,
+): Boolean {
+    val networkIsFastEnough = downstreamBandwidthKbps >= if (networkMetered) {
+        ANIMATED_ARTWORK_FHD_METERED_MIN_BANDWIDTH_KBPS
+    } else {
+        ANIMATED_ARTWORK_FHD_MIN_BANDWIDTH_KBPS
     }
+    return hevcMaximumSize >= ANIMATED_ARTWORK_FHD_SIZE &&
+        memoryClassMb >= 384 &&
+        displayLongestEdge >= ANIMATED_ARTWORK_FHD_SIZE &&
+        networkValidated &&
+        networkIsFastEnough &&
+        !lowRamDevice &&
+        !powerSaveMode
+}
+
+private fun animatedArtworkQualityProfile(context: android.content.Context): AnimatedArtworkQualityProfile {
+    val activityManager = context.getSystemService(ActivityManager::class.java)
+    val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+    val networkCapabilities = connectivityManager
+        ?.getNetworkCapabilities(connectivityManager.activeNetwork)
+    val powerManager = context.getSystemService(PowerManager::class.java)
+    val hevcMaximumSize = hevcSquareDecoderMaximumSize()
     val display = context.resources.displayMetrics
-    val displayLimit = maxOf(display.widthPixels, display.heightPixels)
-        .coerceAtLeast(768)
-    // Never select the softer 360p/408p/486p HLS variants. If the device cannot handle
-    // 768p, ExoPlayer will fall back to the static artwork rather than lowering quality.
-    return minOf(avcDecoderLimit, memoryLimit, displayLimit).coerceAtLeast(768)
+    val useFhd = shouldUseFhdAnimatedArtwork(
+        hevcMaximumSize = hevcMaximumSize,
+        memoryClassMb = activityManager?.memoryClass ?: 0,
+        displayLongestEdge = maxOf(display.widthPixels, display.heightPixels),
+        downstreamBandwidthKbps = networkCapabilities?.linkDownstreamBandwidthKbps ?: 0,
+        networkValidated = networkCapabilities
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true,
+        networkMetered = networkCapabilities
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true,
+        lowRamDevice = activityManager?.isLowRamDevice ?: true,
+        powerSaveMode = powerManager?.isPowerSaveMode ?: false,
+    )
+    return AnimatedArtworkQualityProfile(
+        hevcMaximumSize = hevcMaximumSize,
+        useFhd = useFhd,
+        avcMaximumSize = if (useFhd) {
+            ANIMATED_ARTWORK_FHD_AVC_MAX_EDGE
+        } else {
+            ANIMATED_ARTWORK_HD_AVC_MAX_EDGE
+        },
+    )
 }
 
 private object AnimatedArtworkRepository {
@@ -359,19 +415,33 @@ private object AnimatedArtworkRepository {
         Timber.w(it, "Could not resolve compatible Apple AVC artwork: %s", masterUrl)
     }.getOrNull()
 
-    private fun resolveCompatibleAppleHevcPlaylist(masterUrl: String): String? = runCatching {
+    private data class AppleHevcPlaylists(
+        val hd: String?,
+        val fhd: String?,
+    )
+
+    private fun resolveCompatibleAppleHevcPlaylists(masterUrl: String): AppleHevcPlaylists? = runCatching {
         val request = okhttp3.Request.Builder().url(masterUrl).build()
-        val playlistPath = client.newCall(request).execute().use { response ->
+        val masterPlaylist = client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) return@use null
-            selectCompatibleAppleHevcPlaylist(response.body?.string().orEmpty())
+            response.body?.string()
         } ?: return@runCatching null
-        val playlistUrl = masterUrl.toHttpUrl().resolve(playlistPath)?.toString()
-            ?: return@runCatching null
-        validAnimatedUrl(playlistUrl)?.takeIf {
-            appleVideoAssetId(it) == appleVideoAssetId(masterUrl)
+
+        fun resolve(maximumSize: Int): String? {
+            val playlistPath = selectCompatibleAppleHevcPlaylist(masterPlaylist, maximumSize)
+                ?: return null
+            val playlistUrl = masterUrl.toHttpUrl().resolve(playlistPath)?.toString()
+                ?: return null
+            return validAnimatedUrl(playlistUrl)?.takeIf {
+                appleVideoAssetId(it) == appleVideoAssetId(masterUrl)
+            }
         }
+
+        val hd = resolve(ANIMATED_ARTWORK_HD_SIZE)
+        val fhd = resolve(ANIMATED_ARTWORK_FHD_SIZE)?.takeIf { it != hd }
+        AppleHevcPlaylists(hd = hd, fhd = fhd).takeIf { it.hd != null }
     }.onFailure {
-        Timber.w(it, "Could not resolve square Apple HEVC artwork: %s", masterUrl)
+        Timber.w(it, "Could not resolve adaptive square Apple HEVC artwork: %s", masterUrl)
     }.getOrNull()
 
     suspend fun findAssets(
@@ -426,15 +496,13 @@ private object AnimatedArtworkRepository {
                 // only accept Apple's media host, then prefer that independently packaged asset.
                 val squareHls = validAnimatedUrl(json.optString("animated", ""))
                 val verticalHls = validAnimatedUrl(json.optString("animatedVertical", ""))
-                // Apple's square AVC renditions can be stale even while the square HEVC and
-                // vertical AVC assets are correct. Prefer square HEVC only when Android reports
-                // Main10 support; otherwise use the verified vertical AVC asset. If a claimed
-                // HEVC decoder still fails at runtime, the UI immediately switches to vertical.
-                val squareHevcHls = squareHls
-                    ?.takeIf { hasHevcSquareDecoder() }
-                    ?.let(::resolveCompatibleAppleHevcPlaylist)
-                val useSquareHevc = squareHevcHls != null
-                val selectedHls = squareHevcHls ?: verticalHls ?: squareHls
+                // Apple's square AVC renditions can be stale even while its square HEVC and
+                // vertical AVC assets are correct. Keep HD as the square default and expose FHD
+                // separately so the UI can opt into it only on a capable device and fast network.
+                val squareHevcPlaylists = squareHls?.let(::resolveCompatibleAppleHevcPlaylists)
+                val squareHevcHd = squareHevcPlaylists?.hd
+                val useSquareHevc = squareHevcHd != null
+                val selectedHls = squareHevcHd ?: verticalHls ?: squareHls
                     ?: officialArtwork.animatedUrls.firstOrNull()
                     ?: return@use null
                 val fallbackHls = verticalHls?.takeIf { useSquareHevc && it != selectedHls }
@@ -456,6 +524,7 @@ private object AnimatedArtworkRepository {
                     staticUrl = staticUrl,
                     savedAt = System.currentTimeMillis(),
                     fallbackVideoUrl = fallbackHls,
+                    fhdVideoUrl = squareHevcPlaylists?.fhd?.takeIf { useSquareHevc },
                     preferredVideoMimeType = if (useSquareHevc) MimeTypes.VIDEO_H265 else MimeTypes.VIDEO_H264,
                     offlineMasterUrl = verticalHls ?: selectedHls,
                 )
@@ -593,22 +662,18 @@ private object AnimatedArtworkPlayerStore {
         context: android.content.Context,
         mediaUri: Uri,
         preferredVideoMimeType: String,
+        maximumVideoSize: Int,
     ): ExoPlayer {
-        val key = "$preferredVideoMimeType|$mediaUri"
+        val key = "$preferredVideoMimeType|$maximumVideoSize|$mediaUri"
         if (currentKey == key && currentPlayer != null) return currentPlayer!!
 
         currentPlayer?.release()
-        val maximumVideoSize = if (preferredVideoMimeType == MimeTypes.VIDEO_H265) {
-            1080
-        } else {
-            adaptiveAnimatedArtworkMaxSize(context)
-        }
         val trackSelector = DefaultTrackSelector(context).apply {
             setParameters(
                 buildUponParameters()
-                    // Prefer AVC and cap it to what the current decoder/display can handle.
-                    // Do not impose a minimum size: HLS may start from a small segment for a
-                    // quick first frame, then adapt upward without blocking the artwork UI.
+                    // Keep the selected codec inside the HD/FHD ceiling chosen for this device.
+                    // Do not impose a minimum size on adaptive AVC fallback streams, allowing
+                    // Media3 to start quickly and move upward without blocking the artwork UI.
                     .setMaxVideoSize(maximumVideoSize, maximumVideoSize)
                     .setPreferredVideoMimeType(preferredVideoMimeType)
                     .setMaxVideoFrameRate(24)
@@ -696,6 +761,7 @@ fun AnimatedArtwork(
     onAspectRatioChanged: (Float) -> Unit = {},
 ) {
     val context = LocalContext.current
+    val qualityProfile = remember(mediaId, song, artist) { animatedArtworkQualityProfile(context) }
     val durableStaticArtworkUri = remember(artworkUri, mediaId) {
         AnimatedArtworkRepository.cachedStaticArtwork(context, mediaId)
     }
@@ -728,15 +794,29 @@ fun AnimatedArtwork(
     }
 
     var useFallbackVideo by remember(mediaId, artworkAssets?.videoUrl) { mutableStateOf(false) }
-    val animatedUrl = if (useFallbackVideo) {
+    val requiresCompatibilityFallback = artworkAssets?.preferredVideoMimeType == MimeTypes.VIDEO_H265 &&
+        qualityProfile.hevcMaximumSize < ANIMATED_ARTWORK_HD_SIZE
+    val useEffectiveFallback = useFallbackVideo || requiresCompatibilityFallback
+    val animatedUrl = if (useEffectiveFallback) {
         artworkAssets?.fallbackVideoUrl
+    } else if (qualityProfile.useFhd) {
+        artworkAssets?.fhdVideoUrl ?: artworkAssets?.videoUrl
     } else {
         artworkAssets?.videoUrl
     }
-    val preferredVideoMimeType = if (useFallbackVideo) {
+    val preferredVideoMimeType = if (useEffectiveFallback) {
         MimeTypes.VIDEO_H264
     } else {
         artworkAssets?.preferredVideoMimeType ?: MimeTypes.VIDEO_H264
+    }
+    val maximumVideoSize = if (preferredVideoMimeType == MimeTypes.VIDEO_H265) {
+        if (qualityProfile.useFhd && artworkAssets?.fhdVideoUrl == animatedUrl) {
+            ANIMATED_ARTWORK_FHD_SIZE
+        } else {
+            ANIMATED_ARTWORK_HD_SIZE
+        }
+    } else {
+        qualityProfile.avcMaximumSize
     }
     val staticArtworkUri = durableStaticArtworkUri ?: artworkAssets?.staticUrl ?: artworkUri
     var localAnimatedUri by remember(mediaId, animatedUrl, song, artist, durationSeconds, album) {
@@ -786,11 +866,12 @@ fun AnimatedArtwork(
 
         if (playableAnimatedUri != null) {
             var videoAspectRatio by remember(playableAnimatedUri) { mutableStateOf(1f) }
-            val player = remember(playableAnimatedUri, preferredVideoMimeType) {
+            val player = remember(playableAnimatedUri, preferredVideoMimeType, maximumVideoSize) {
                 AnimatedArtworkPlayerStore.acquire(
                     context,
                     playableAnimatedUri,
                     preferredVideoMimeType,
+                    maximumVideoSize,
                 )
             }
             var videoReady by remember(playableAnimatedUri) {
