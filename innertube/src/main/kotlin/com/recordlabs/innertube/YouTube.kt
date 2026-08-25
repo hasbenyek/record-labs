@@ -3040,9 +3040,19 @@ object YouTube {
         client: YouTubeClient,
         signatureTimestamp: Int? = null,
         poToken: String? = null,
+        setLogin: Boolean = true,
+        visitorDataOverride: String? = innerTube.visitorData,
     ): Result<PlayerResponse> =
         runCatching {
-            innerTube.player(client, videoId, playlistId, signatureTimestamp, poToken).body<PlayerResponse>()
+            innerTube.player(
+                client = client,
+                videoId = videoId,
+                playlistId = playlistId,
+                signatureTimestamp = signatureTimestamp,
+                poToken = poToken,
+                setLogin = setLogin,
+                visitorDataOverride = visitorDataOverride,
+            ).body<PlayerResponse>()
         }
 
     suspend fun registerPlayback(

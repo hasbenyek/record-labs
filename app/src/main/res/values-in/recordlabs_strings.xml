@@ -156,6 +156,14 @@
     <string name="filter_uploaded">Diunggah</string>
     <string name="show_uploaded_playlist">Tampilkan playlist Diunggah</string>
     <string name="updater">Pembaruan</string>
+    <string name="update_available_message">Record Labs %1$s tersedia. Unduh dan instal sekarang?</string>
+    <string name="update_now">Perbarui sekarang</string>
+    <string name="update_later">Nanti</string>
+    <string name="update_downloading">Mengunduh pembaruan…</string>
+    <string name="update_verifying">Memverifikasi pembaruan…</string>
+    <string name="update_download_failed">Pembaruan gagal: %1$s</string>
+    <string name="update_permission_required">Izinkan Record Labs menginstal aplikasi tidak dikenal, lalu kembali ke sini.</string>
+    <string name="update_invalid_file">APK yang diunduh gagal diverifikasi.</string>
     <string name="check_for_updates">Periksa pembaruan secara otomatis</string>
     <string name="update_notifications">Aktifkan notifikasi pembaruan</string>
     <string name="update_available_title">Pembaruan tersedia</string>

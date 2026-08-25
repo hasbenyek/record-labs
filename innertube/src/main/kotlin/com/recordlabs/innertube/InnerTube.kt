@@ -224,12 +224,18 @@ class InnerTube {
         playlistId: String?,
         signatureTimestamp: Int?,
         poToken: String? = null,
+        setLogin: Boolean = true,
+        visitorDataOverride: String? = visitorData,
     ) = withRetry {
         httpClient.post("player") {
-            ytClient(client, setLogin = true)
+            ytClient(client, setLogin = setLogin)
             setBody(
                 PlayerBody(
-                    context = client.toContext(locale, visitorData, dataSyncId).let {
+                    context = client.toContext(
+                        locale,
+                        visitorDataOverride,
+                        if (setLogin) dataSyncId else null,
+                    ).let {
                         if (client.isEmbedded) {
                             it.copy(
                                 thirdParty = Context.ThirdParty(

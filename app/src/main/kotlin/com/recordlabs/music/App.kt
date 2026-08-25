@@ -36,6 +36,7 @@ import com.recordlabs.music.utils.cipher.CipherDeobfuscator
 import com.recordlabs.music.utils.dataStore
 import com.recordlabs.music.utils.safeDataStoreEdit
 import com.recordlabs.music.utils.reportException
+import com.recordlabs.music.updater.AppUpdater
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -120,6 +121,14 @@ class App :
             }
 
             observeSettingsChanges()
+
+            // Check at most once per day. A new release is downloaded only after the user taps
+            // the notification, so startup and music playback remain unaffected.
+            launch(Dispatchers.IO) {
+                delay(4_000)
+                runCatching { AppUpdater.checkForUpdate(this@App) }
+                    .onFailure { Timber.tag("AppUpdater").w(it, "Update check failed") }
+            }
         }
     }
 

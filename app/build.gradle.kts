@@ -28,6 +28,8 @@ val debugKeyAlias = System.getenv("RECORDLABS_DEBUG_KEY_ALIAS")?.takeIf { it.isN
 val debugKeyPassword = System.getenv("RECORDLABS_DEBUG_KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: "android"
 val persistentDebugKeystoreFile = file("persistent-debug.keystore")
 val workflowDebugKeystoreFile = debugKeystorePathOverride?.let(::file)
+val recordLabsVersionCode = System.getenv("RECORDLABS_VERSION_CODE")?.toIntOrNull() ?: 19
+val recordLabsVersionName = System.getenv("RECORDLABS_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.9"
 
 plugins {
     id("com.android.application")
@@ -101,10 +103,10 @@ android {
         applicationId = applicationIdOverride ?: baseApplicationId
         minSdk = 26
         targetSdk = 36
-        // Record Labs' own version numbering (independent of the upstream RecordLabs versioning
-        // this was forked from). Bump versionName by 0.1 (and versionCode by 1) per release.
-        versionCode = 1
-        versionName = "1.0"
+        // Local builds start at 1.9. Automated GitHub builds override both values so Android always
+        // receives a monotonically increasing versionCode while users see the release tag.
+        versionCode = recordLabsVersionCode
+        versionName = recordLabsVersionName
         resValue("string", "app_name", appNameOverride ?: "Record Labs")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
