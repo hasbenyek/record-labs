@@ -71,7 +71,22 @@ jobs:
           RECORDLABS_DEBUG_KEY_PASSWORD: ${{ secrets.RECORDLABS_KEY_PASSWORD }}
           LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
           LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
-        run: ./gradlew :app:assembleFossDebug --no-daemon
+        shell: bash
+        run: |
+          set +e
+          ./gradlew :app:assembleFossDebug --no-daemon --stacktrace 2>&1 | tee gradle-build.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          if [[ "$BUILD_STATUS" -ne 0 ]]; then
+            {
+              echo "### Gradle build failure"
+              echo '```text'
+              tail -n 80 gradle-build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            DETAILS="$(tail -n 80 gradle-build.log | sed -e 's/%/%25/g' -e ':a;N;$!ba;s/\n/%0A/g' -e 's/\r/%0D/g')"
+            echo "::error title=Gradle build failed::$DETAILS"
+            exit "$BUILD_STATUS"
+          fi
 
       - name: Prepare release files
         id: files
