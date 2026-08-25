@@ -77,13 +77,21 @@ jobs:
           ./gradlew :app:assembleFossDebug --no-daemon --stacktrace 2>&1 | tee gradle-build.log
           BUILD_STATUS=${PIPESTATUS[0]}
           if [[ "$BUILD_STATUS" -ne 0 ]]; then
+            FAILURE_DETAILS="$(awk '
+              /FAILURE: Build failed/ { capture = 1 }
+              capture { print; lines++ }
+              lines == 40 { exit }
+            ' gradle-build.log)"
+            if [[ -z "$FAILURE_DETAILS" ]]; then
+              FAILURE_DETAILS="$(tail -n 40 gradle-build.log)"
+            fi
             {
               echo "### Gradle build failure"
               echo '```text'
-              tail -n 80 gradle-build.log
+              echo "$FAILURE_DETAILS"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            DETAILS="$(tail -n 80 gradle-build.log | sed -e 's/%/%25/g' -e ':a;N;$!ba;s/\n/%0A/g' -e 's/\r/%0D/g')"
+            DETAILS="$(echo "$FAILURE_DETAILS" | sed -e 's/%/%25/g' -e ':a;N;$!ba;s/\n/%0A/g' -e 's/\r/%0D/g')"
             echo "::error title=Gradle build failed::$DETAILS"
             exit "$BUILD_STATUS"
           fi
