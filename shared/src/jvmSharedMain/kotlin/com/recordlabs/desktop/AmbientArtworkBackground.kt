@@ -14,7 +14,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import coil3.PlatformContext
@@ -67,18 +69,48 @@ internal fun AmbientArtworkBackground(artworkModel: Any?, baseColor: Color, modi
     DisposableEffect(builder) {
         onDispose { builder?.close() }
     }
-    Spacer(
-        // Own layer: a new frame redraws only the background, not the page on top.
-        modifier.graphicsLayer().background(baseColor).drawBehind {
-            @Suppress("UNUSED_EXPRESSION")
-            frame // redraw on every tick
-            val colors = AmbientPalettes.mix(from, to, blend.value)
-            val brush = builder?.brush(size.width, size.height, AmbientClock.seconds(), AMBIENT_SPREAD, colors, AmbientShader.seeds)
-            if (brush == null) drawRect(AmbientPalettes.averageColor(colors)) else drawRect(brush)
-            drawRect(Color.Black.copy(alpha = AMBIENT_DIM))
-        },
-    )
+    // Phones: the colours are worked out for a picture a third of the size and then
+    // stretched (smoothly) over the screen. The gradients are so soft that it looks
+    // the same, for 1/9 of the graphics work per frame (on slower phones this
+    // full-screen shader alone took a large part of each frame). Not smaller: the
+    // shader's fine grain against colour banding has to survive the stretch.
+    val downscale = AMBIENT_DOWNSCALE
+    androidx.compose.foundation.layout.Box(modifier.background(baseColor).clipToBounds()) {
+        Spacer(
+            Modifier
+                // A third of the box, rounded up (scaled back it covers the box whole).
+                .layout { measurable, constraints ->
+                    val width = kotlin.math.ceil(constraints.maxWidth / downscale).toInt()
+                    val height = kotlin.math.ceil(constraints.maxHeight / downscale).toInt()
+                    val placeable = measurable.measure(androidx.compose.ui.unit.Constraints.fixed(width, height))
+                    layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(0, 0) }
+                }
+                // Own layer: a new frame redraws only the background, not the page on top.
+                // Drawn small in its own buffer, then scaled up when composited.
+                .graphicsLayer {
+                    if (downscale > 1f) {
+                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                        scaleX = downscale
+                        scaleY = downscale
+                    }
+                }
+                .drawBehind {
+                    @Suppress("UNUSED_EXPRESSION")
+                    frame // redraw on every tick
+                    val colors = AmbientPalettes.mix(from, to, blend.value)
+                    val brush = builder?.brush(size.width, size.height, AmbientClock.seconds(), AMBIENT_SPREAD, colors, AmbientShader.seeds)
+                    if (brush == null) drawRect(AmbientPalettes.averageColor(colors)) else drawRect(brush)
+                    drawRect(Color.Black.copy(alpha = AMBIENT_DIM))
+                },
+        )
+    }
 }
+
+/** Phones draw the background at a third of the size (see above); `debug.recordlabs.ambientscale` overrides it. */
+private val AMBIENT_DOWNSCALE: Float =
+    com.recordlabs.desktop.data.Platform.debugProp("ambientscale").toFloatOrNull()?.coerceIn(1f, 16f)
+        ?: if (com.recordlabs.desktop.data.Platform.isAndroid) 3f else 1f
 
 /** Measuring only: `adb shell setprop debug.recordlabs.ambient 0` keeps the background still (read at launch). */
 private object AmbientSwitch {

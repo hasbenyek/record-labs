@@ -1276,14 +1276,68 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 return profile
             }
         }
-        val response = runCatching {
+        val menu = runCatching {
             client.postJson(
                 "https://music.youtube.com/youtubei/v1/account/account_menu?key=$API_KEY",
                 buildJsonObject { put("context", clientContext()) }.toString(),
             )
-        }.getOrNull() ?: return null
-        return profileFromAccountMenu(response).also { if (it == null) saveAccountMenuForDebug(response, "account-menu-debug.json") }
+        }.getOrNull()
+        menu?.let(::profileFromAccountMenu)?.let { return it }
+        // Sessions from a browser the app cannot look into (Firefox on Linux) had no
+        // account read from the login page, and the menu above came back without the
+        // account: signed in, but no name and no picture. Two more places with the
+        // account (the account list, and YouTube's account switcher).
+        val accounts = runCatching {
+            client.postJson(
+                "https://music.youtube.com/youtubei/v1/account/accounts_list?key=$API_KEY",
+                buildJsonObject { put("context", clientContext()) }.toString(),
+            )
+        }.getOrNull()
+        accounts?.let(::profileFromAccountItems)?.let { return it }
+        val switcher = runCatching { accountSwitcher() }.getOrNull()
+        switcher?.let(::profileFromAccountItems)?.let { return it }
+        menu?.let { saveAccountMenuForDebug(it, "account-menu-debug.json") }
+        accounts?.let { saveAccountMenuForDebug(it, "accounts-list-debug.json") }
+        switcher?.let { saveAccountMenuForDebug(it, "account-switcher-debug.json") }
+        return null
     }
+
+    /** YouTube's account switcher (the account picker on youtube.com), with the session's cookies. */
+    private suspend fun accountSwitcher(): JsonObject? {
+        val session = WindowsPreferences.googleSession() ?: return null
+        val text = client.get("https://www.youtube.com/getAccountSwitcherEndpoint") {
+            header("Accept", "application/json")
+            header("Accept-Language", "en-US,en;q=0.9")
+            header("User-Agent", DEFAULT_STREAM_USER_AGENT)
+            header("Origin", "https://www.youtube.com")
+            header("X-Origin", "https://www.youtube.com")
+            header("Referer", "https://www.youtube.com/")
+            header("Cookie", session.cookie)
+            header("Authorization", session.sapisidHash("https://www.youtube.com"))
+            header("X-Goog-AuthUser", "0")
+        }.bodyAsText()
+        // The reply starts with )]}' (protection against reading it as a script).
+        val json = text.substringAfter(")]}'").trim()
+        return runCatching { Json.parseToJsonElement(json).jsonObject }.getOrNull()
+    }
+
+    /** The signed-in account in a list of accounts (accounts_list, the account switcher). */
+    private fun profileFromAccountItems(response: JsonObject): GoogleAccountProfile? {
+        val items = response.findObjects("accountItem") + response.findObjects("accountItemRenderer")
+        val item = items.firstOrNull { it["isSelected"]?.jsonPrimitive?.contentOrNull == "true" } ?: items.firstOrNull() ?: return null
+        val name = item["accountName"]?.displayText().orEmpty()
+        if (name.isBlank()) return null
+        val photo = (item["accountPhoto"] as? JsonObject)?.bestArtworkUrl()
+        val handle = item["channelHandle"]?.displayText()?.takeIf(String::isNotBlank)
+        val email = (item["accountByline"]?.displayText() ?: item["email"]?.displayText())?.takeIf { it.contains('@') }
+        return GoogleAccountProfile(name, photo, email, handle).also {
+            WindowsPreferences.saveGoogleAccountProfile(it.name, it.photoUrl, it.email, it.channelHandle)
+        }
+    }
+
+    /** Text in either of YouTube's forms: runs ({"runs": [{"text"}]}) or {"simpleText"}. */
+    private fun JsonElement.displayText(): String =
+        allRunText().ifBlank { findString("simpleText").orEmpty() }.ifBlank { findString("content").orEmpty() }.trim()
 
     /**
      * The account (name, picture, email, handle) in an account_menu reply: from the app's
@@ -1304,14 +1358,15 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             ?: response.findObjects("googleAccountHeaderRenderer").firstOrNull()
             ?: response.findObjects("accountHeaderRenderer").firstOrNull()
             ?: return null
-        val name = header["accountName"]?.allRunText().orEmpty()
-            .ifBlank { header["name"]?.allRunText().orEmpty() }
+        // A name as {"simpleText"} (not only as runs) was not read: no account shown.
+        val name = header["accountName"]?.displayText().orEmpty()
+            .ifBlank { header["name"]?.displayText().orEmpty() }
             .ifBlank { header.findString("name").orEmpty() }
         if (name.isBlank()) return null
-        val email = header["email"]?.allRunText().orEmpty()
+        val email = header["email"]?.displayText().orEmpty()
             .ifBlank { header.findStrings("email").firstOrNull { it.contains('@') }.orEmpty() }
             .takeIf(String::isNotBlank)
-        val channelHandle = header["channelHandle"]?.allRunText().orEmpty()
+        val channelHandle = header["channelHandle"]?.displayText().orEmpty()
             .ifBlank { header.findString("channelHandle").orEmpty() }
             .trim()
             .takeIf(String::isNotBlank)
@@ -2740,13 +2795,13 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         })
     }
 
-    private fun WindowsPreferences.GoogleSession.sapisidHash(): String {
+    private fun WindowsPreferences.GoogleSession.sapisidHash(origin: String = "https://music.youtube.com"): String {
         fun cookieValue(name: String) = cookie.split(';').map(String::trim)
             .firstOrNull { it.startsWith("$name=") }
             ?.substringAfter('=')
         val timestamp = System.currentTimeMillis() / 1000
         fun hash(secret: String) = MessageDigest.getInstance("SHA-1")
-            .digest("$timestamp $secret https://music.youtube.com".toByteArray())
+            .digest("$timestamp $secret $origin".toByteArray())
             .joinToString("") { "%02x".format(it) }
         // As the YouTube Music website sends it: the first- and third-party variants too
         // (some sessions are only accepted with them).

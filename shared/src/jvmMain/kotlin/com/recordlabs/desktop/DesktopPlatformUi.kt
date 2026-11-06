@@ -22,6 +22,7 @@ actual object PlatformDisplayScale {
 
 actual object PlatformKeepAwake {
     actual fun setPlaying(playing: Boolean) = PlaybackKeepAwake.setPlaying(playing)
+    actual fun setPlayerPageOpen(open: Boolean) = Unit
 }
 
 actual fun prefetchAnimatedArtwork(remoteUrl: String) = AnimatedArtworkDiskCache.prefetch(remoteUrl)

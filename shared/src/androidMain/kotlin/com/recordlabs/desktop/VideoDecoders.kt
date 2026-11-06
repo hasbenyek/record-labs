@@ -56,6 +56,22 @@ internal object VideoDecoders {
             else -> false
         }
 
+    /**
+     * Full screen may start a second, sharper video next to the one playing (it fades
+     * in over it): not on WSA or with the software decoders, nor on phones with little
+     * memory. `setprop debug.recordlabs.vsharp 0/1` overrides it.
+     */
+    fun sharperFullscreen(context: android.content.Context): Boolean {
+        when (debugProp("debug.recordlabs.vsharp")) {
+            "1" -> return true
+            "0" -> return false
+        }
+        if (isWsa || preferSoftware) return false
+        val activityManager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val memory = android.app.ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo)
+        return !activityManager.isLowRamDevice && memory.totalMem >= 5_500L * 1024L * 1024L
+    }
+
     /** Renderers for a video player: these decoders, fallback on, queueing as above. */
     fun renderersFactory(context: android.content.Context): androidx.media3.exoplayer.DefaultRenderersFactory {
         val sync = synchronousQueueing
@@ -68,16 +84,34 @@ internal object VideoDecoders {
 
     /** The view the player draws into (see [useSurfaceView]). */
     fun createVideoView(context: android.content.Context, player: androidx.media3.exoplayer.ExoPlayer): android.view.View =
+        newVideoView(context).also { bind(player, it) }
+
+    /** A view for a video picture, not given to a player yet (see [bind]). */
+    fun newVideoView(context: android.content.Context): android.view.View =
         if (useSurfaceView) {
-            android.view.SurfaceView(context).also { player.setVideoSurfaceView(it) }
+            android.view.SurfaceView(context)
         } else {
             android.view.TextureView(context).apply {
                 isOpaque = false
-                player.setVideoTextureView(this)
                 // The crop/fit follows the view's size (it is laid out after the first update).
                 addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ -> applyFit(view as android.view.TextureView) }
             }
         }
+
+    /** The player draws into [view] from now on (moved from the view it drew into). */
+    fun bind(player: androidx.media3.exoplayer.ExoPlayer, view: android.view.View) {
+        when (view) {
+            is android.view.TextureView -> player.setVideoTextureView(view)
+            is android.view.SurfaceView -> player.setVideoSurfaceView(view)
+        }
+    }
+
+    fun unbind(player: androidx.media3.exoplayer.ExoPlayer, view: android.view.View) {
+        when (view) {
+            is android.view.TextureView -> player.clearVideoTextureView(view)
+            is android.view.SurfaceView -> player.clearVideoSurfaceView(view)
+        }
+    }
 
     private data class VideoFit(val videoAspect: Float?, val crop: Boolean)
 

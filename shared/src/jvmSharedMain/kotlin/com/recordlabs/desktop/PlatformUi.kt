@@ -1,6 +1,8 @@
 package com.recordlabs.desktop
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -33,6 +35,16 @@ expect object PlatformDisplayScale {
 /** Keeps the computer/phone from sleeping while music plays (where needed). */
 expect object PlatformKeepAwake {
     fun setPlaying(playing: Boolean)
+    /** The player or lyrics page is open (phones keep the screen on there while playing). */
+    fun setPlayerPageOpen(open: Boolean)
+}
+
+/**
+ * Android: the app full screen (status and navigation bars hidden), in landscape.
+ * The desktop window has its own full-screen mode.
+ */
+object PlatformAppFullscreen {
+    var enabled by androidx.compose.runtime.mutableStateOf(false)
 }
 
 /** Starts downloading an animated artwork video so it shows at once later. */

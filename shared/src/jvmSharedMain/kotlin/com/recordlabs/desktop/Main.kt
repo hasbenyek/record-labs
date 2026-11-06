@@ -991,6 +991,11 @@ internal fun RecordLabsWindow(
             performHomeLoad(null, false)
         }
         LaunchedEffect(repository, accountSyncGeneration) {
+            // Signed in (or out) just now: Home is loaded again at once, as the account's
+            // own feed (its YouTube Music taste), without waiting for the library sync
+            // below (slow on a big library) or needing auto sync on. At launch
+            // (generation 0) Home is loaded by the effect above.
+            if (accountSyncGeneration > 0) launch { performHomeLoad(null, true) }
             if (WindowsPreferences.googleSession() != null && WindowsPreferences.autoSync()) {
                 runCatching {
                     if (!repository.validateGoogleSession()) {
@@ -1005,7 +1010,7 @@ internal fun RecordLabsWindow(
                 }.onSuccess { remote ->
                     libraryStore.mergeRemote(remote.liked, remote.playlists)
                     library = libraryStore.snapshot()
-                    performHomeLoad(null, false)
+                    if (accountSyncGeneration == 0) performHomeLoad(null, false)
                 }
             }
         }
@@ -2352,6 +2357,8 @@ internal fun RecordLabsWindow(
         // No screen saver or sleep while music or a video plays; Windows' own
         // timers apply again once playback stops.
         LaunchedEffect(isPlaying) { PlatformKeepAwake.setPlaying(isPlaying) }
+        // Phones: the screen stays on while the player or lyrics page shows a playing song.
+        LaunchedEffect(playerDestination != null) { PlatformKeepAwake.setPlayerPageOpen(playerDestination != null) }
         LaunchedEffect(latestTogglePlayback, latestSkipTrack, latestSeekPlayback) {
             FloatingLyricsState.onPlayPause = { latestTogglePlayback() }
             FloatingLyricsState.onPrevious = { latestSkipTrack(-1) }
@@ -3818,9 +3825,12 @@ private fun LandscapeHeader(
                     unfocusedIndicatorColor = Color.Transparent,
                 ),
             )
-            // Android has no full-screen window mode.
-            if (!com.recordlabs.desktop.data.Platform.isAndroid) Surface(shape = CircleShape, color = HeaderGlass, border = BorderStroke(1.dp, HeaderGlassBorder), modifier = Modifier.size(44.dp).clickable { onFullscreen() }) {
-                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Fullscreen, "Fullscreen", tint = Color.White) }
+            // Android (landscape): full screen hides the status and navigation bars.
+            Surface(shape = CircleShape, color = HeaderGlass, border = BorderStroke(1.dp, HeaderGlassBorder), modifier = Modifier.size(44.dp).clickable { onFullscreen() }) {
+                Box(contentAlignment = Alignment.Center) {
+                    val androidFullscreen = com.recordlabs.desktop.data.Platform.isAndroid && PlatformAppFullscreen.enabled
+                    Icon(if (androidFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, "Fullscreen", tint = Color.White)
+                }
             }
         }
         Row(
@@ -3850,6 +3860,11 @@ private fun LandscapeHeader(
         }
     }
     }
+}
+
+/** Measuring only: `adb shell setprop debug.recordlabs.marquee 0` keeps long titles still (read at launch). */
+private object MarqueeSwitch {
+    val enabled: Boolean = com.recordlabs.desktop.data.Platform.debugProp("marquee") != "0"
 }
 
 /** Bottom edge of the header search box (window pixels), for the suggestions panel. */
@@ -7800,6 +7815,11 @@ private class ArtworkLoadingStyle(val shimmer: Boolean, val retry: Boolean) {
 
 private val LocalArtworkLoading = androidx.compose.runtime.staticCompositionLocalOf { ArtworkLoadingStyle.Default }
 
+/** Artwork that failed this often shows its plain backing while it is tried again. */
+private const val ARTWORK_SHIMMER_ATTEMPTS = 2
+/** ... and after this many failures it is not tried again (until shown anew). */
+private const val ARTWORK_MAX_ATTEMPTS = 8
+
 /** Pause before loading attempt [attempt] + 1 of something that failed. */
 private fun loadingRetryDelayMs(attempt: Int): Long = (1_000L shl (attempt - 1).coerceIn(0, 4)).coerceAtMost(15_000L)
 
@@ -7874,8 +7894,11 @@ internal fun Artwork(url: String?, modifier: Modifier, shape: Shape = RoundedCor
         },
         contentAlignment = Alignment.Center,
     ) {
-        val canRetry = loadingStyle.retry && sourceModel is String
-        if (loadingStyle.shimmer && sourceModel != null && !fullResolutionReady && !loadFailed) {
+        // Tried a few times: later attempts go on quietly (no moving light), and stop
+        // after a while. A picture that never came kept its light moving for good,
+        // and the whole page was drawn again 60 times a second while it sat still.
+        val canRetry = loadingStyle.retry && sourceModel is String && failedAttempts < ARTWORK_MAX_ATTEMPTS
+        if (loadingStyle.shimmer && sourceModel != null && !fullResolutionReady && !loadFailed && failedAttempts < ARTWORK_SHIMMER_ATTEMPTS) {
             Box(Modifier.fillMaxSize().loadingShimmer())
         }
         if (artworkModel != null && !loadFailed && !retryPending) {
@@ -8391,7 +8414,9 @@ internal fun PlayerPage(
                                         onSeek = onSeek,
                                         // Room for the active line (two rows when it is long).
                                         modifier = if (wideVideo) Modifier.fillMaxSize().padding(top = 8.dp, bottom = 6.dp)
-                                        else Modifier.fillMaxWidth().height(84.dp).padding(bottom = 6.dp),
+                                        // A little higher than the title row, so a long active line's
+                                        // second row (grown while lit) is not cut at the bottom.
+                                        else Modifier.fillMaxWidth().height(100.dp).padding(bottom = 16.dp),
                                         showNextLines = wideVideo,
                                     )
                                 }
@@ -8650,6 +8675,9 @@ private fun PlayerMenuBottomSheet(
             LyricsTranslationToggleItem()
             LyricsTranslationLanguageItem()
         }
+        IosMenuGroup {
+            AnimatedArtworkToggleItem()
+        }
     }
 }
 
@@ -8887,9 +8915,27 @@ private fun LandscapePageCorners(
             exit = androidx.compose.animation.fadeOut(tween(200)),
             modifier = Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 12.dp),
         ) {
-            // Android: a back button in place of full screen (closes the page like the top pill).
-            if (android) BouncyIconButton(onClick = onClose) {
-                Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
+            // Android: back (closes the page like the top pill) and full screen (hides the
+            // status and navigation bars), in a pill like the lyrics | translate one.
+            if (android) Surface(
+                shape = RoundedCornerShape(50),
+                color = Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+            ) {
+                Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BouncyIconButton(onClick = onClose) {
+                        Icon(Icons.Default.ArrowBack, "Back", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                    Box(Modifier.padding(horizontal = 2.dp).width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.28f)))
+                    BouncyIconButton(onClick = onToggleFullscreen) {
+                        Icon(
+                            if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            if (isFullscreen) "Exit full screen" else "Full screen",
+                            tint = if (isFullscreen) MaterialTheme.colors.primary else Color.White,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                }
             } else BouncyIconButton(onClick = onToggleFullscreen) {
                 Icon(if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, "Toggle fullscreen", tint = Color.White)
             }
@@ -10540,6 +10586,7 @@ private fun LyricsSongMenuItems(
         IosMenuRow("Download", LineIcons.Download, onDownload)
         IosMenuRow("Listen Together", LineIcons.People, onListenTogether)
         IosMenuRow("Tempo and pitch", LineIcons.Sliders, onAdvanced)
+        AnimatedArtworkToggleItem()
     }
 }
 
@@ -11770,6 +11817,18 @@ private object PlayerChrome {
 }
 
 /** ⋮ menu entry: lyrics translation on or off (it used to be a button at the top right). */
+/** Animated artwork on or off (the same switch as Settings > Appearance). */
+@Composable
+private fun AnimatedArtworkToggleItem() {
+    var enabled by com.recordlabs.desktop.data.AppSettings.animatedArtwork
+    IosMenuToggleRow(
+        "Animated artwork",
+        enabled,
+        { enabled = it },
+        subtitle = "Moving album artwork when there is one",
+    )
+}
+
 @Composable
 private fun LyricsTranslationToggleItem() {
     IosMenuToggleRow(
@@ -12558,9 +12617,13 @@ fun TrackTitleText(
         textDecoration = if (hovered && onOpenCatalog != null) androidx.compose.ui.text.style.TextDecoration.Underline else androidx.compose.ui.text.style.TextDecoration.None,
         modifier = modifier
             .let { m ->
-                if (marquee && maxLines == 1) {
+                if (marquee && maxLines == 1 && MarqueeSwitch.enabled) {
+                    // Twice per song (again with the next song, or when a page with it opens),
+                    // not forever: while it scrolled the whole window was drawn again 60
+                    // times a second, even with the app sitting still on Home with a long
+                    // title in the mini player (heavy on slower phones, and the battery).
                     m.basicMarquee(
-                        iterations = Int.MAX_VALUE,
+                        iterations = 2,
                         initialDelayMillis = 2_000,
                         repeatDelayMillis = 3_000,
                         velocity = 32.dp,

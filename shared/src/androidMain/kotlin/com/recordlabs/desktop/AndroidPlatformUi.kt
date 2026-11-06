@@ -3,6 +3,8 @@ package com.recordlabs.desktop
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
@@ -98,7 +100,19 @@ actual object PlatformDisplayScale {
 
 /** The playback service keeps the phone awake while music plays. */
 actual object PlatformKeepAwake {
-    actual fun setPlaying(playing: Boolean) = Unit
+    /** Read by the Android window (see AndroidScreenOn): the screen stays on while both hold. */
+    var musicPlaying by androidx.compose.runtime.mutableStateOf(false)
+        private set
+    var pageOpen by androidx.compose.runtime.mutableStateOf(false)
+        private set
+
+    actual fun setPlaying(playing: Boolean) {
+        musicPlaying = playing
+    }
+
+    actual fun setPlayerPageOpen(open: Boolean) {
+        pageOpen = open
+    }
 }
 
 actual fun prefetchAnimatedArtwork(remoteUrl: String) = Unit

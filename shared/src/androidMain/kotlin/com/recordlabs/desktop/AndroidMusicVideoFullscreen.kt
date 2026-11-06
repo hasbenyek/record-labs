@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -51,7 +52,7 @@ import kotlinx.coroutines.delay
 /** Picture height of "Auto" in full screen (720p plays smoothly on WSA / most phones; higher is in the menu). */
 private const val FULLSCREEN_AUTO_HEIGHT = 720
 
-private fun Context.findActivity(): Activity? {
+internal fun Context.findActivity(): Activity? {
     var context: Context? = this
     while (context is ContextWrapper) {
         if (context is Activity) return context
@@ -68,33 +69,41 @@ private fun Context.findActivity(): Activity? {
  */
 @Composable
 internal fun AndroidMusicVideoFullscreen() {
-    val trackId = MusicVideoFullscreen.trackId
+    val requested = MusicVideoFullscreen.trackId
     val currentTrack = FloatingLyricsState.currentTrack
     // Previous / Next while full screen: carry on with the next video, or close.
-    LaunchedEffect(currentTrack?.id, trackId) {
-        if (trackId != null && currentTrack?.id != trackId) {
+    LaunchedEffect(currentTrack?.id, requested) {
+        if (requested != null && currentTrack?.id != requested) {
             if (currentTrack != null && currentTrack.hasMusicVideo) MusicVideoFullscreen.follow(currentTrack.id)
             else MusicVideoFullscreen.close()
         }
     }
-    if (trackId == null) {
-        // Android draws no "shrink back" picture: nothing to finish.
-        if (MusicVideoFullscreen.exitFrame != null) MusicVideoFullscreen.exitDone()
-        return
-    }
+    // Android draws no "shrink back" picture: nothing to finish.
+    if (MusicVideoFullscreen.exitFrame != null) MusicVideoFullscreen.exitDone()
+
+    // Opening grows the view in (fade + scale) while the screen turns; closing fades it
+    // out over the page, already turned back, before it goes. The video itself is the
+    // page's own, moved here (it never stops: see MusicVideoSession).
+    var shownId by remember { mutableStateOf<String?>(null) }
+    if (requested != null && shownId != requested) shownId = requested
+    val appear = remember { androidx.compose.animation.core.Animatable(0f) }
     val activity = LocalContext.current.findActivity()
-    DisposableEffect(activity) {
-        val previousOrientation = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        val controller = activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller?.hide(WindowInsetsCompat.Type.systemBars())
-        onDispose {
-            activity?.requestedOrientation = previousOrientation
-            controller?.show(WindowInsetsCompat.Type.systemBars())
+    val previousOrientation = remember { intArrayOf(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) }
+    LaunchedEffect(requested != null) {
+        if (requested != null) {
+            AndroidWindowUi.videoFullscreen = true
+            previousOrientation[0] = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            appear.animateTo(1f, tween(340, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+        } else if (shownId != null) {
+            activity?.requestedOrientation = previousOrientation[0]
+            AndroidWindowUi.videoFullscreen = false
+            appear.animateTo(0f, tween(320, delayMillis = 120, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+            shownId = null
         }
     }
-    BackHandler { MusicVideoFullscreen.close() }
+    val trackId = shownId ?: return
+    if (requested != null) BackHandler { MusicVideoFullscreen.close() }
 
     val track = currentTrack?.takeIf { it.id == trackId } ?: Track(trackId, "", "")
     // What this video offers: heights for the quality menu, uploader captions for subtitles.
@@ -115,9 +124,16 @@ internal fun AndroidMusicVideoFullscreen() {
             captionCues = runCatching { AndroidMusicVideoSource.repository.musicVideoCaptions(captionTrack) }.getOrDefault(emptyList())
         }
     }
+    // Auto: the video already playing on the page carries on as it is; on a phone that
+    // decodes two videos at once with ease, a sharper one fades in over it once it plays.
+    val context = LocalContext.current
+    val autoHeight = remember(trackId) {
+        val running = MusicVideoSessions.heightFor(trackId) ?: MUSIC_VIDEO_HEIGHT
+        if (VideoDecoders.sharperFullscreen(context)) maxOf(running, FULLSCREEN_AUTO_HEIGHT) else running
+    }
     val height = effectiveMusicVideoQuality(MusicVideoFullscreen.quality, heights)
-        ?: heights.firstOrNull { it <= FULLSCREEN_AUTO_HEIGHT }
-        ?: FULLSCREEN_AUTO_HEIGHT
+        ?: heights.firstOrNull { it <= autoHeight }
+        ?: autoHeight
 
     // A tap shows the controls; they hide again after a moment (not while seeking
     // or with a menu open).
@@ -132,8 +148,9 @@ internal fun AndroidMusicVideoFullscreen() {
     Box(
         Modifier
             .fillMaxSize()
+            .fullscreenAppear(appear)
             .background(Color.Black)
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+            .clickable(enabled = requested != null, interactionSource = remember { MutableInteractionSource() }, indication = null) {
                 controlsVisible = !controlsVisible
                 lastTouch = System.nanoTime()
             },
@@ -210,3 +227,13 @@ private fun androidx.compose.foundation.layout.BoxScope.FullscreenCaption(
         )
     }
 }
+
+/** The full-screen view's fade and slight growth ([appear] 0 = gone, 1 = shown). */
+private fun Modifier.fullscreenAppear(appear: androidx.compose.animation.core.Animatable<Float, *>): Modifier =
+    this.then(Modifier.graphicsLayer {
+        val p = appear.value
+        alpha = p
+        val scale = 0.94f + 0.06f * p
+        scaleX = scale
+        scaleY = scale
+    })

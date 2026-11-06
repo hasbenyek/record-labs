@@ -32,8 +32,12 @@ fun RecordLabsAndroidContent() {
         onDispose { lifecycle.removeObserver(observer) }
     }
     androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize()) {
-        RecordLabsWindow(isFullscreen = false, onToggleFullscreen = {})
+        RecordLabsWindow(
+            isFullscreen = PlatformAppFullscreen.enabled,
+            onToggleFullscreen = { PlatformAppFullscreen.enabled = !PlatformAppFullscreen.enabled },
+        )
         // A music video opened full screen from the portrait player (turned landscape).
         AndroidMusicVideoFullscreen()
     }
+    AndroidWindowUiEffects()
 }

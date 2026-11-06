@@ -9,7 +9,7 @@ plugins {
 }
 
 // The version people see; the GitHub release tag is "v" + this.
-val appVersionName = "2.0.0"
+val appVersionName = "2.0.1"
 // Always higher than the 1.9.x releases (190000 + build number), so Android accepts
 // 2.x as an update of them: 2.0.0 -> 2000000, 2.0.1 -> 2000100, 2.1.0 -> 2010000.
 val appVersionCode = appVersionName.split('.').map { it.filter(Char::isDigit).toIntOrNull() ?: 0 }

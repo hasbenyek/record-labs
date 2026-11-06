@@ -1,0 +1,7 @@
+- Music videos keep playing when you open them full screen, with a smooth way in and out
+- A full-screen button in landscape (next to Back on the player and lyrics pages, and in the header) hides the status and navigation bars
+- The screen stays on while the player or lyrics page shows a playing song
+- Home shows your own YouTube Music feed right after you sign in
+- Animated artwork can be switched on or off from the ⋯ menu of the player and lyrics pages, and is on by default
+- The lyrics under the artwork sit a little higher, so a long line is no longer cut off
+- Smoother on slower phones: lighter background on the player pages, and long titles and loading artwork no longer keep the screen redrawing
