@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_now_playing_name">Now playing</string>
+    <string name="widget_now_playing_description">The song playing (or the last one), its lyrics and the playback buttons</string>
+</resources>

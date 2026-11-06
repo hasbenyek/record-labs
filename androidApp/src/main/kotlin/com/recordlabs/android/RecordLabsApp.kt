@@ -29,6 +29,8 @@ class RecordLabsApp : Application() {
         // The version shown in the app (Settings, About) is the Android app's own (versionName).
         runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull()
             ?.takeIf(String::isNotBlank)?.let { System.setProperty("recordlabs.app-version", it) }
+        // The in-app updates only replace the release app itself (see AndroidUpdates).
+        Platform.androidPackageName = packageName
         Platform.androidDataRoot = File(filesDir, "record-labs").apply { mkdirs() }
         Platform.androidCacheRoot = File(cacheDir, "record-labs").apply { mkdirs() }
         Platform.androidDeviceName = listOf(Build.MANUFACTURER, Build.MODEL)
@@ -52,6 +54,8 @@ class RecordLabsApp : Application() {
             }.getOrDefault(false)
         }
         com.recordlabs.desktop.AndroidAppContext.init(this)
+        // Home-screen widget (song, lyrics, playback buttons).
+        NowPlayingWidgetUpdater.install(this)
         // Discord Rich Presence with a Discord login (Settings > Integrations > Discord).
         runCatching { com.recordlabs.desktop.data.AndroidDiscord.install(this) }
         // Android drops multicast/broadcast packets unless an app holds this lock:

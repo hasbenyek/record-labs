@@ -38,6 +38,16 @@ object AndroidUpdates {
     /** Where Android releases are published, "owner/repo" (public). The original Android app's repository. */
     const val GITHUB_REPO = "hasbenyek/record-labs"
 
+    /**
+     * The application id of the releases on GitHub. A build with another id (a test build
+     * made on a computer) cannot be updated by them: Android would install the release as
+     * a second Record Labs app next to it, so no update is offered there.
+     */
+    const val RELEASE_PACKAGE = "com.recordlabs.music.debug"
+
+    private val updatableHere: Boolean
+        get() = Platform.androidPackageName.let { it == null || it == RELEASE_PACKAGE }
+
     private const val SNOOZE_MS = 24L * 60L * 60L * 1_000L
     private const val CHECK_EVERY_MS = 6L * 60L * 60L * 1_000L
 
@@ -80,6 +90,7 @@ object AndroidUpdates {
     /** On launch and whenever the app comes back after a while: at most every few hours. */
     fun checkInBackground() {
         if (!Platform.isAndroid) return
+        if (!updatableHere) return
         if (System.currentTimeMillis() - lastCheckAt < CHECK_EVERY_MS) return
         scope.launch { check(manual = false) }
     }
@@ -90,6 +101,10 @@ object AndroidUpdates {
     }
 
     private suspend fun check(manual: Boolean) = lock.withLock {
+        if (!updatableHere) {
+            if (manual) manualStatus.value = "This is a test build: install the release from GitHub to get updates in the app"
+            return@withLock
+        }
         val current = banner.value
         if (current is Banner.Downloading || current is Banner.Ready) return@withLock
         if (manual) manualStatus.value = "Checking…"

@@ -69,6 +69,12 @@ class AndroidPlaybackEngine private constructor(context: Context) : PlaybackEngi
             Platform.androidPrefetch = { videoId -> instance().prefetch(videoId) }
         }
 
+        /**
+         * The app's handler of media commands ("play", "pause", "next", "previous") while
+         * its window is open, without creating the player; null when the app is closed.
+         */
+        fun commandHandler(): ((String) -> Unit)? = engine?.onMediaCommand
+
         /** The one player of the app (created on first use, on the main thread). */
         fun instance(): AndroidPlaybackEngine = engine ?: synchronized(this) {
             engine ?: AndroidPlaybackEngine(checkNotNull(appContext) { "AndroidPlaybackEngine.init was not called" }).also { engine = it }

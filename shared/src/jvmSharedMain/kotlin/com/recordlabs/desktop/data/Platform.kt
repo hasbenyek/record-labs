@@ -37,6 +37,8 @@ object Platform {
     @Volatile var androidDataRoot: File? = null
     @Volatile var androidCacheRoot: File? = null
     @Volatile var androidDeviceName: String? = null
+    /** Android: the app's package (application id); the releases are com.recordlabs.music.debug. */
+    @Volatile var androidPackageName: String? = null
 
     /**
      * Android: a debug switch set with `adb shell setprop debug.recordlabs.<name> <value>`

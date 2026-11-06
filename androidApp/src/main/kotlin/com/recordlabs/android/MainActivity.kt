@@ -41,12 +41,36 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        takeWidgetCommand(intent)
         setContent {
             Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.safeDrawing)) {
                 RecordLabsAndroidContent()
             }
         }
     }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takeWidgetCommand(intent)
+    }
+
+    /** A home-screen widget button pressed while the app was closed: the app runs it once open. */
+    private fun takeWidgetCommand(intent: android.content.Intent?) {
+        val command = intent?.getStringExtra(NowPlayingWidget.EXTRA_COMMAND) ?: return
+        intent.removeExtra(NowPlayingWidget.EXTRA_COMMAND)
+        com.recordlabs.desktop.NowPlayingFeed.pendingCommand = command
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // The app's player is gone with its window: the widget's buttons open the app again.
+        android.os.Handler(mainLooper).post { NowPlayingWidgetUpdater.render(applicationContext) }
+    }
+
+    // Hardware keyboard shortcuts of the app (\ shows the header on the player pages).
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean =
+        com.recordlabs.desktop.AndroidHardwareKeys.onKeyEvent(event) || super.dispatchKeyEvent(event)
 
     override fun onStart() {
         super.onStart()

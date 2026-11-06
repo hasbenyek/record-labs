@@ -728,7 +728,6 @@ internal fun RecordLabsWindow(
             playerSettings.savedShuffle.value = shuffleEnabled
             playerSettings.savedRepeat.value = repeatMode
         }
-        var sleepTimerDeadlineMs by remember { mutableStateOf<Long?>(null) }
         val searchHistory = remember {
             androidx.compose.runtime.mutableStateListOf<String>().apply { addAll(SearchHistoryStore.load()) }
         }
@@ -742,7 +741,9 @@ internal fun RecordLabsWindow(
         val libraryTarget = remember { mutableStateOf<String?>(null) }
         var landscapeSearchExpanded by remember { mutableStateOf(false) }
         var searchBoxFocused by remember { mutableStateOf(false) }
-        val playerHeaderVisible = remember { mutableStateOf(true) }
+        // Android (landscape): the header stays hidden when a player page opens (\ on a
+        // keyboard brings it); the desktop shows it for 3 s first.
+        val playerHeaderVisible = remember { mutableStateOf(!com.recordlabs.desktop.data.Platform.isAndroid) }
         val searchFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
         val searchSelectAllTrigger = remember { mutableStateOf(0) }
         var headerHovered by remember { mutableStateOf(false) }
@@ -750,16 +751,36 @@ internal fun RecordLabsWindow(
         val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
 
         LaunchedEffect(playerDestination) {
-            if (playerDestination != null) playerHeaderVisible.value = true
+            if (playerDestination != null) playerHeaderVisible.value = !com.recordlabs.desktop.data.Platform.isAndroid
             // The hover tracker only exists on the player pages; leaving them
             // gives no Exit event, so start fresh next time.
-            else headerHovered = false
+            else {
+                headerHovered = false
+                // Hidden already when the next player page opens (no flash of it).
+                if (com.recordlabs.desktop.data.Platform.isAndroid) playerHeaderVisible.value = false
+            }
         }
         LaunchedEffect(playerDestination, playerHeaderVisible.value, landscapeSearchExpanded, headerHovered) {
             if (playerDestination != null && playerHeaderVisible.value && !landscapeSearchExpanded && !headerHovered) {
                 kotlinx.coroutines.delay(3000)
                 playerHeaderVisible.value = false
             }
+        }
+        // Android: \ on a hardware keyboard (reported by MainActivity), as on the desktop:
+        // the header comes back with the search box ready.
+        LaunchedEffect(PlayerHeaderRequest.count) {
+            if (PlayerHeaderRequest.count == 0) return@LaunchedEffect
+            if (!hasSeenHeaderHint.value) {
+                hasSeenHeaderHint.value = true
+                java.util.prefs.Preferences.userRoot().node("com.recordlabs.desktop").putBoolean("hasSeenHeaderHint", true)
+            }
+            playerHeaderVisible.value = true
+            landscapeSearchExpanded = true
+            searchSelectAllTrigger.value++
+            kotlinx.coroutines.delay(100)
+            runCatching { searchFocusRequester.requestFocus() }
+            kotlinx.coroutines.delay(50)
+            searchSelectAllTrigger.value++
         }
         var landscapeSearchWidthPx by remember { mutableStateOf(500) }
         var landscapeSearchLeftPx by remember { mutableStateOf(180) }
@@ -2354,6 +2375,16 @@ internal fun RecordLabsWindow(
             // The position follows on its own, without recomposing the window.
             androidx.compose.runtime.snapshotFlow { playbackPositionMs }.collect { FloatingLyricsState.positionMs = it }
         }
+        // Android: the home-screen widget (song, three lyric lines, controls).
+        NowPlayingFeedEffect(currentTrack, isPlaying) { playbackPositionMs }
+        // A widget button pressed while the app was closed: run it once the last song is back.
+        LaunchedEffect(NowPlayingFeed.pendingCommand, currentTrack?.id) {
+            val command = NowPlayingFeed.pendingCommand ?: return@LaunchedEffect
+            if (currentTrack == null) return@LaunchedEffect
+            NowPlayingFeed.pendingCommand = null
+            kotlinx.coroutines.delay(300)
+            latestNativeMediaCommand(command)
+        }
         // No screen saver or sleep while music or a video plays; Windows' own
         // timers apply again once playback stops.
         LaunchedEffect(isPlaying) { PlatformKeepAwake.setPlaying(isPlaying) }
@@ -2427,6 +2458,11 @@ internal fun RecordLabsWindow(
                     // with guest controls on every song end skipped one more song.
                     if (WindowsListenTogetherClient.isGuestNow()
                     ) return@launch
+                    // Sleep timer set to the end of the song: stop here.
+                    if (SleepTimer.consumeTrackEnd()) {
+                        applyLocalPlaybackState(false)
+                        return@launch
+                    }
                     when {
                         repeatMode == 2 -> currentTrack?.let(::beginPlayback)
                         // Settings > Player > Autoplay off: stop when the song ends.
@@ -2437,12 +2473,17 @@ internal fun RecordLabsWindow(
                 }
             }
         }
-        LaunchedEffect(sleepTimerDeadlineMs) {
-            val deadline = sleepTimerDeadlineMs ?: return@LaunchedEffect
+        // Sleep timer (⋯ menu of the player and the lyrics page): pause when it runs out.
+        LaunchedEffect(SleepTimer.deadlineMs) {
+            val deadline = SleepTimer.deadlineMs ?: return@LaunchedEffect
             delay((deadline - System.currentTimeMillis()).coerceAtLeast(0L))
-            mediaPlayer.pause()
-            isPlaying = false
-            sleepTimerDeadlineMs = null
+            SleepTimer.fired()
+            when {
+                // A listener in a Listen Together room only quiets its own sound.
+                WindowsListenTogetherClient.isGuestNow() -> { mediaPlayer.pause(); isPlaying = false }
+                // Pauses here, or the device playing for this one (Connect).
+                isPlaying -> togglePlayback()
+            }
         }
         // Discord Rich Presence (Settings > Integrations > Discord): the playback is
         // reported here; DiscordRichPresence decides when Discord needs an update.
@@ -3063,9 +3104,9 @@ homeLoading = homeLoading,
                             onToggleShuffle = ::toggleShuffle,
                             repeatMode = repeatMode,
                             onCycleRepeat = { repeatMode = (repeatMode + 1) % 3 },
-                            sleepTimerActive = sleepTimerDeadlineMs != null,
+                            sleepTimerActive = SleepTimer.active,
                             onToggleSleepTimer = {
-                                sleepTimerDeadlineMs = if (sleepTimerDeadlineMs == null) System.currentTimeMillis() + 30 * 60_000L else null
+                                if (SleepTimer.active) SleepTimer.cancel() else SleepTimer.start(30)
                             },
                             onShare = { copyTrackLink(currentTrack!!) },
                             onStartRadio = { startRadio(currentTrack!!) },
@@ -3164,9 +3205,9 @@ homeLoading = homeLoading,
                             onToggleShuffle = ::toggleShuffle,
                             repeatMode = repeatMode,
                             onCycleRepeat = { repeatMode = (repeatMode + 1) % 3 },
-                            sleepTimerActive = sleepTimerDeadlineMs != null,
+                            sleepTimerActive = SleepTimer.active,
                             onToggleSleepTimer = {
-                                sleepTimerDeadlineMs = if (sleepTimerDeadlineMs == null) System.currentTimeMillis() + 30 * 60_000L else null
+                                if (SleepTimer.active) SleepTimer.cancel() else SleepTimer.start(30)
                             },
                             onStartRadio = { startRadio(currentTrack!!) },
                             playbackTempo = playbackTempo,
@@ -3802,7 +3843,7 @@ private fun LandscapeHeader(
                     }
                 }
                 .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                    if (event.type == KeyEventType.KeyDown && (event.key == Key.Enter || event.key == Key.NumPadEnter)) {
                         onSubmit(); true
                     } else false
                 },
@@ -3819,6 +3860,9 @@ private fun LandscapeHeader(
                 } else null,
                 placeholder = { Text("What do you want to play?") },
                 singleLine = true,
+                // The keyboard's search key (Android keyboards often send it instead of Enter).
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() }, onDone = { onSubmit() }, onGo = { onSubmit() }),
                 colors = TextFieldDefaults.textFieldColors(
                     backgroundColor = HeaderGlass,
                     focusedIndicatorColor = Color.Transparent,
@@ -4301,7 +4345,8 @@ private fun DockSongBar(
     modifier: Modifier,
 ) {
     // Portrait: the player card grows out of this bar and shrinks back into it.
-    DockGlass(RoundedCornerShape(50), modifier.sheetFlightPart(SheetPart.DockBar).clickable(onClick = onOpenPlayer)) {
+    // Drag it up to open the player, as well as a tap.
+    DockGlass(RoundedCornerShape(50), modifier.swipeUpToOpen(onOpenPlayer).sheetFlightPart(SheetPart.DockBar).clickable(onClick = onOpenPlayer)) {
         Row(Modifier.fillMaxSize().padding(start = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             // Where the player's artwork (and the lyrics page's title and artist) lands when it closes.
             Artwork(track.artworkUrl, Modifier.size(40.dp).sheetFlightPart(SheetPart.DockArt), RoundedCornerShape(9.dp))
@@ -4390,7 +4435,7 @@ internal fun CompactHeader(
                         SearchBoxBottom.windowPx = it.positionInWindow().y + it.size.height
                     }
                     .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) { onSubmit(); true } else false
+                        if (event.type == KeyEventType.KeyDown && (event.key == Key.Enter || event.key == Key.NumPadEnter)) { onSubmit(); true } else false
                     },
                 leadingIcon = { Icon(Icons.Default.Search, null, tint = SecondaryText) },
                 trailingIcon = if (textFieldValue.text.isNotBlank()) {
@@ -4402,6 +4447,9 @@ internal fun CompactHeader(
                 } else null,
                 placeholder = { Text("What do you want to play?", maxLines = 1) },
                 singleLine = true,
+                // The keyboard's search key (Android keyboards often send it instead of Enter).
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() }, onDone = { onSubmit() }, onGo = { onSubmit() }),
                 colors = TextFieldDefaults.textFieldColors(
                     backgroundColor = HeaderGlass,
                     focusedIndicatorColor = Color.Transparent,
@@ -5095,6 +5143,8 @@ private fun ListenTogetherTextField(
         singleLine = true,
         textStyle = style,
         cursorBrush = androidx.compose.ui.graphics.SolidColor(Accent),
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = if (onDone != null) androidx.compose.ui.text.input.ImeAction.Go else androidx.compose.ui.text.input.ImeAction.Default),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { onDone?.invoke() }, onDone = { onDone?.invoke() }, onSearch = { onDone?.invoke() }),
         modifier = modifier
             .trackTextInputFocus()
             .onFocusChanged { focused = it.isFocused }
@@ -8130,6 +8180,8 @@ private fun MiniPlayer(
     Box(
         Modifier
             .fillMaxWidth()
+            // Drag it up to open the player, as well as a click.
+            .swipeUpToOpen(onOpenPlayer)
             .shadow(16.dp, miniShape)
             .clip(miniShape)
             .background(SurfaceColor.copy(alpha = 0.88f))
@@ -8278,7 +8330,11 @@ internal fun PlayerPage(
     // Portrait shows the queue in place of the artwork, not as a side panel.
     var portraitLayout by remember { mutableStateOf(true) }
 
-    Box(Modifier.fillMaxSize().offset { IntOffset(0, animatedOffsetY.roundToInt()) }) {
+    BoxWithConstraints(Modifier.fillMaxSize().offset { IntOffset(0, animatedOffsetY.roundToInt()) }) {
+        // Portrait or landscape is decided from the whole page, before the queue panel takes
+        // its width: measured after it, a page just over the limit flipped between the two.
+        val pageCompact = isCompactLayout(maxWidth, maxHeight)
+        androidx.compose.runtime.SideEffect { if (portraitLayout != pageCompact) portraitLayout = pageCompact }
         // During a swap to the other page, or while the portrait card grows or shrinks, the
         // shared background behind is shown instead.
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (PlayerPageSwap.active || sheetCardDrawsBackground) 0f else 1f }) {
@@ -8301,7 +8357,7 @@ internal fun PlayerPage(
         BoxWithConstraints(
             Modifier
                 .fillMaxSize()
-                .padding(start = if (portraitLayout) 0.dp else queueShift)
+                .padding(start = if (pageCompact) 0.dp else queueShift)
                 .pointerInput(Unit) {
                     detectVerticalDragGestures(
                         onDragStart = { isPageDragging = true },
@@ -8323,8 +8379,7 @@ internal fun PlayerPage(
                     )
                 },
         ) {
-            val compact = isCompactLayout(maxWidth, maxHeight)
-            LaunchedEffect(compact) { portraitLayout = compact }
+            val compact = pageCompact
             if (compact) {
                 // PORTRAIT LAYOUT (Apple Music style): the artwork, or the queue in its
                 // place, then the title row and the controls.
@@ -8676,6 +8731,7 @@ private fun PlayerMenuBottomSheet(
             LyricsTranslationLanguageItem()
         }
         IosMenuGroup {
+            SleepTimerMenuItem()
             AnimatedArtworkToggleItem()
         }
     }
@@ -8904,13 +8960,15 @@ private fun LandscapePageCorners(
     onQueue: (() -> Unit)? = null,
     /** Closes the page, like the pill at the top centre (Android's back button in the corner). */
     onClose: () -> Unit = {},
+    /** False hides every corner button (the lyrics page hides them after 3 s without input). */
+    controlsVisible: Boolean = true,
 ) {
     val android = com.recordlabs.desktop.data.Platform.isAndroid
     Box(Modifier.fillMaxSize()) {
         // While the header is showing it has its own full-screen button; this
         // corner button comes back when the header hides.
         androidx.compose.animation.AnimatedVisibility(
-            visible = !PlayerChrome.headerShown,
+            visible = !PlayerChrome.headerShown && controlsVisible,
             enter = androidx.compose.animation.fadeIn(tween(300)),
             exit = androidx.compose.animation.fadeOut(tween(200)),
             modifier = Modifier.align(Alignment.TopStart).padding(start = 14.dp, top = 12.dp),
@@ -8944,15 +9002,20 @@ private fun LandscapePageCorners(
         // (the header shows its own one, next to Listen Together, while it is visible).
         // Android has it in the pill below, in place of floating lyrics.
         if (!android) androidx.compose.animation.AnimatedVisibility(
-            visible = !PlayerChrome.headerShown,
+            visible = !PlayerChrome.headerShown && controlsVisible,
             enter = androidx.compose.animation.fadeIn(tween(300)),
             exit = androidx.compose.animation.fadeOut(tween(200)),
             modifier = Modifier.align(Alignment.TopEnd).padding(end = 19.dp, top = 17.dp),
         ) {
             LyricsTranslationButton()
         }
-        Surface(
+        androidx.compose.animation.AnimatedVisibility(
+            visible = controlsVisible,
+            enter = androidx.compose.animation.fadeIn(tween(300)),
+            exit = androidx.compose.animation.fadeOut(tween(300)),
             modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 22.dp),
+        ) {
+        Surface(
             shape = RoundedCornerShape(50),
             color = Color.White.copy(alpha = 0.12f),
             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
@@ -8996,6 +9059,7 @@ private fun LandscapePageCorners(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -9486,7 +9550,10 @@ internal fun LyricsPage(
     // the lines are drawn (see [LyricsAtPosition]), not here: the whole page used to
     // recompose with every position update.
 
-    Box(Modifier.fillMaxSize().offset { IntOffset(0, animatedPageOffsetY.roundToInt()) }) {
+    BoxWithConstraints(Modifier.fillMaxSize().offset { IntOffset(0, animatedPageOffsetY.roundToInt()) }) {
+        // Decided from the whole page, before the queue panel takes its width (see PlayerPage).
+        val pageLandscape = !isCompactLayout(maxWidth, maxHeight)
+        androidx.compose.runtime.SideEffect { if (isLandscapeLayout != pageLandscape) isLandscapeLayout = pageLandscape }
         // During a swap to the other page, or while the portrait card grows or shrinks, the
         // shared background behind is shown instead.
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (PlayerPageSwap.active || sheetCardDrawsBackground) 0f else 1f }) {
@@ -9507,12 +9574,12 @@ internal fun LyricsPage(
         ) { closeQueueThen(onClose) }
 
         BoxWithConstraints(
-            Modifier.fillMaxSize().padding(start = if (isLandscapeLayout) queueShift else 0.dp)
+            Modifier.fillMaxSize().padding(start = if (pageLandscape) queueShift else 0.dp)
                 .pointerInput(Unit) {
                     var gestureEnabled = false
                     detectVerticalDragGestures(
                         onDragStart = { start ->
-                            val landscape = !isCompactLayout(size.width.toDp(), size.height.toDp())
+                            val landscape = isLandscapeLayout
                             gestureEnabled = if (landscape) start.x <= size.width * .54f
                             else start.y <= size.height * .16f || start.y >= size.height * .72f
                             pageDragging = gestureEnabled
@@ -9539,8 +9606,7 @@ internal fun LyricsPage(
         ) {
             val containerWidth = maxWidth
             val containerHeight = maxHeight
-            val isLandscape = !isCompactLayout(containerWidth, containerHeight)
-            LaunchedEffect(isLandscape) { isLandscapeLayout = isLandscape }
+            val isLandscape = pageLandscape
             if (!isLandscape) {
                 // PORTRAIT (Apple Music style): small artwork + title at the top, the
                 // lyrics, and the controls, which hide after 3 s without input and
@@ -9650,6 +9716,14 @@ internal fun LyricsPage(
                 // With a video the lyrics also take the empty room at the right, so the
                 // video and the lyrics sit evenly across the page.
                 val lyricsTrailingWeight by animateFloatAsState(if (musicVideoAspect != null) 0.001f else 0.10f, tween(450, easing = androidx.compose.animation.core.FastOutSlowInEasing), label = "lyrics-trailing-space")
+                // The corner buttons (back / full screen, lyrics, translate, floating lyrics)
+                // hide after 3 s without input and come back on a touch, click, mouse
+                // movement or scroll; they stay while a menu or panel is open.
+                val cornerControls = rememberIdleVisibility(
+                    keep = isQueueVisible || showPageMenu || showAdvanced || showDetails ||
+                        showPlaylistPicker || showOffsetEditor || showLyricsEditor || showLyricsSearch,
+                )
+                Box(Modifier.fillMaxSize().reportsActivity(cornerControls)) {
                 Row(Modifier.fillMaxSize().padding(horizontal = 34.dp, vertical = 24.dp)) {
                     Column(
                         Modifier.weight(0.50f).fillMaxHeight(),
@@ -9767,7 +9841,9 @@ internal fun LyricsPage(
                     lyricsActive = true,
                     onLyrics = { onBack() },
                     onClose = { closeQueueThen(onClose) },
+                    controlsVisible = cornerControls.visible,
                 )
+                }
             }
         }
     if (isLandscapeLayout) PlaybackQueueDialog(
@@ -10424,8 +10500,8 @@ private fun LyricsSearchDialog(track: Track, onDismiss: () -> Unit, onSelect: (L
         text = {
             if (results == null) {
                 Column(Modifier.widthIn(min = 300.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    GlassTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth().trackTextInputFocus())
-                    GlassTextField(artist, { artist = it }, label = { Text("Artist") }, singleLine = true, modifier = Modifier.fillMaxWidth().trackTextInputFocus())
+                    GlassTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth().trackTextInputFocus(), onSearch = ::search)
+                    GlassTextField(artist, { artist = it }, label = { Text("Artist") }, singleLine = true, modifier = Modifier.fillMaxWidth().trackTextInputFocus(), onSearch = ::search)
                 }
             } else {
                 // Fills the dialog's width on narrow windows, up to a comfortable reading width.
@@ -10586,6 +10662,9 @@ private fun LyricsSongMenuItems(
         IosMenuRow("Download", LineIcons.Download, onDownload)
         IosMenuRow("Listen Together", LineIcons.People, onListenTogether)
         IosMenuRow("Tempo and pitch", LineIcons.Sliders, onAdvanced)
+    }
+    IosMenuGroup {
+        SleepTimerMenuItem()
         AnimatedArtworkToggleItem()
     }
 }

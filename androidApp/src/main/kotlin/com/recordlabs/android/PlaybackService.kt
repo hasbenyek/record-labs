@@ -44,6 +44,7 @@ class PlaybackService : MediaSessionService() {
             player.playWhenReady = false
             player.pause()
         }
+        runCatching { NowPlayingWidgetUpdater.markStopped(this) }
         runCatching { session?.release() }
         session = null
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }

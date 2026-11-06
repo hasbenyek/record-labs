@@ -217,12 +217,16 @@ internal fun GlassTextField(
     placeholder: (@Composable () -> Unit)? = null,
     singleLine: Boolean = false,
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    // Enter, or the keyboard's search key, runs this (null: the key does nothing special).
+    onSearch: (() -> Unit)? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
         singleLine = singleLine,
+        keyboardOptions = if (onSearch != null) androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search) else androidx.compose.foundation.text.KeyboardOptions.Default,
+        keyboardActions = if (onSearch != null) androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch() }, onDone = { onSearch() }) else androidx.compose.foundation.text.KeyboardActions.Default,
         visualTransformation = visualTransformation,
         textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
         cursorBrush = SolidColor(Color.White),
