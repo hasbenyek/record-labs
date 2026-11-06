@@ -1,7 +1,7 @@
 name: Android release
 
-# Pushing a tag v1.2.3 (the versionName in androidApp/build.gradle.kts) builds the
-# optimised Android app (R8, resource shrinking, baseline profile) and publishes it as
+# A push to main whose versionName (androidApp/build.gradle.kts) has no release yet,
+# or a pushed tag v1.2.3, builds the optimised Android app (R8, resource shrinking, baseline profile) and publishes it as
 # the repository's latest release:
 #   Record-Labs-<version>.apk and Record-Labs-<version>.apk.sha256
 #
@@ -15,6 +15,7 @@ name: Android release
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
   workflow_dispatch:
 
@@ -47,6 +48,8 @@ jobs:
       - name: Version
         id: version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           v="$(sed -n 's/^val appVersionName = "\(.*\)"/\1/p' androidApp/build.gradle.kts | tr -d '\r' | head -1)"
           test -n "$v" || { echo "::error::No appVersionName in androidApp/build.gradle.kts"; exit 1; }
@@ -55,8 +58,15 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          # main: only a version that is not released yet (raise versionName to release).
+          publish=true
+          if [[ "$GITHUB_REF" == refs/heads/* ]] && gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$v is already released: nothing to do"; publish=false
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
       - name: Restore the signing key
+        if: steps.version.outputs.publish == 'true'
         shell: bash
         env:
           KEYSTORE_BASE64: ${{ secrets.RECORDLABS_KEYSTORE_BASE64 }}
@@ -65,6 +75,7 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/recordlabs.keystore"
 
       - name: Build the release APK
+        if: steps.version.outputs.publish == 'true'
         shell: bash
         env:
           RECORDLABS_APPLICATION_ID: com.recordlabs.music
@@ -90,6 +101,7 @@ jobs:
           fi
 
       - name: Check the signature and package
+        if: steps.version.outputs.publish == 'true'
         id: files
         shell: bash
         run: |
@@ -109,6 +121,7 @@ jobs:
           echo "apk=$APK" >> "$GITHUB_OUTPUT"
 
       - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -121,6 +134,7 @@ jobs:
             gh release upload "$TAG" "$APK" "$APK.sha256" --clobber
           else
             gh release create "$TAG" "$APK" "$APK.sha256" \
+              --target "$GITHUB_SHA" \
               --title "Record Labs ${{ steps.version.outputs.version }}" \
               "${NOTES_ARGS[@]}" --latest
           fi
