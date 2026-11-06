@@ -108,6 +108,8 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
     /** Pictures shown lately, closed a little later (Compose may still be drawing the last one). */
     private val recent = ArrayDeque<org.jetbrains.skia.Image>()
     private var lastPullAt = 0.0
+    /** The picture's bytes, reused from one picture to the next (Skia copies them). */
+    private var pixels = ByteArray(0)
 
     init {
         val link = NSURL.URLWithString(url)
@@ -190,8 +192,10 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
             val rowBytes = CVPixelBufferGetBytesPerRow(buffer).toInt()
             val base = CVPixelBufferGetBaseAddress(buffer)
             if (width <= 0 || height <= 0 || base == null) return
-            val bytes = ByteArray(rowBytes * height)
-            bytes.usePinned { memcpy(it.addressOf(0), base, bytes.size.convert()) }
+            val size = rowBytes * height
+            if (pixels.size != size) pixels = ByteArray(size)
+            val bytes = pixels
+            bytes.usePinned { memcpy(it.addressOf(0), base, size.convert()) }
             CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
             val image = org.jetbrains.skia.Image.makeRaster(
                 org.jetbrains.skia.ImageInfo(width, height, org.jetbrains.skia.ColorType.BGRA_8888, org.jetbrains.skia.ColorAlphaType.PREMUL),
@@ -327,7 +331,7 @@ internal fun IosAnimatedArtwork(
     Box(modifier.clip(shape)) {
         streamUrl?.let { url ->
             key(url) {
-                val frames = remember(url) { IosVideoFrames(url, userAgent = null, loop = true, maxSide = 1080.0) }
+                val frames = remember(url) { IosVideoFrames(url, userAgent = null, loop = true, maxSide = 720.0) }
                 DisposableEffect(frames) { onDispose { frames.release() } }
                 LaunchedEffect(frames, windowShown) { if (windowShown) frames.play() else frames.pause() }
                 LaunchedEffect(frames.pictureShown) { pictureShown = frames.pictureShown }
