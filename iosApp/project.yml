@@ -16,6 +16,10 @@ targets:
     platform: iOS
     sources:
       - iosApp
+      # The app's pictures and fonts (the desktop's resources), as the "resources" folder.
+      - path: ../src/main/resources
+        type: folder
+        buildPhase: resources
     info:
       path: iosApp/Info.plist
       properties:
@@ -23,6 +27,9 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
+        # White status bar text on the app's dark pages.
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: false
         UIRequiresFullScreen: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

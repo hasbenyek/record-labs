@@ -56,14 +56,14 @@ object Platform {
      * Android playback engine itself, like the original Android app), and its
      * resolver for everything else that needs a stream URL (downloads).
      */
-    @Volatile var androidStreamUri: ((String) -> String)? = null
-    @Volatile var androidStreamResolver: (suspend (String) -> String?)? = null
+    var androidStreamUri: ((String) -> String)? get() = StreamHooks.streamUri; set(value) { StreamHooks.streamUri = value }
+    var androidStreamResolver: (suspend (String) -> String?)? get() = StreamHooks.streamResolver; set(value) { StreamHooks.streamResolver = value }
     /** Android: the signed-in account (name, photo) from the original Android app's client. */
-    @Volatile var androidAccountProfile: (suspend () -> GoogleAccountProfile?)? = null
+    var androidAccountProfile: (suspend () -> GoogleAccountProfile?)? get() = StreamHooks.accountProfile; set(value) { StreamHooks.accountProfile = value }
     /** Android: true = signed in, false = the account request refused the session, null = could not tell (offline). */
-    @Volatile var androidValidateSession: (suspend () -> Boolean?)? = null
+    var androidValidateSession: (suspend () -> Boolean?)? get() = StreamHooks.validateSession; set(value) { StreamHooks.validateSession = value }
     /** Android: resolve a song and cache its first seconds ahead of time (next song in the queue). */
-    @Volatile var androidPrefetch: (suspend (String) -> Unit)? = null
+    var androidPrefetch: (suspend (String) -> Unit)? get() = StreamHooks.prefetch; set(value) { StreamHooks.prefetch = value }
     /** Android: binds a Record Labs Connect socket (DatagramSocket or Socket, not yet connected) to the Wi-Fi/Ethernet network. */
     @Volatile var lanSocketBinder: ((Any) -> Unit)? = null
     /** Android: opens a downloaded update (.apk) in the system installer; false when it could not. */

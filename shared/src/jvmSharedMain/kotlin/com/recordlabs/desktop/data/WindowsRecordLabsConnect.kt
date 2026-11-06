@@ -33,40 +33,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
-data class ConnectDevice(
-    val id: String,
-    val name: String,
-    val platform: String,
-    val lastSeenMs: Long,
-    val isPlaybackDevice: Boolean,
-    /** Heard only through the Connect relay (not on this network): "over the internet". */
-    val overInternet: Boolean = false,
-)
 
-data class WindowsConnectDiscoveryStatus(
-    val running: Boolean = false,
-    val listenerReady: Boolean = false,
-    val accountIdentityCount: Int = 0,
-    val ipv4InterfaceCount: Int = 0,
-    val sentPackets: Long = 0,
-    val receivedPackets: Long = 0,
-    val rejectedAccountPackets: Long = 0,
-    val lastError: String? = null,
-    /** The Connect relay (devices on other networks): "off", "connecting", "connected (n)" or why not. */
-    val relay: String = "off",
-)
 
-data class ConnectPlaybackState(
-    val ownerId: String,
-    val track: Track?,
-    val positionMs: Long,
-    val durationMs: Long,
-    val isPlaying: Boolean,
-    val sentAtMs: Long,
-    val queue: List<Track> = emptyList(),
-    val queueIndex: Int = 0,
-    val isReady: Boolean = false,
-)
 
 /**
  * Account-scoped, local-network transport for Record Labs Connect.
@@ -77,7 +45,7 @@ data class ConnectPlaybackState(
  * automatic on the same Wi-Fi while all playback still streams independently
  * from its normal provider (only state/control data crosses the LAN).
  */
-object WindowsRecordLabsConnect {
+actual object WindowsRecordLabsConnect {
     private const val GROUP = "239.255.42.99"
     private const val PORT = 45_922
 
@@ -276,7 +244,7 @@ object WindowsRecordLabsConnect {
     private val debugFile: java.io.File? by lazy { runCatching { java.io.File(Platform.dataRoot, "connect-debug.log") }.getOrNull() }
     private val debugTime = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
 
-    fun debugLog(message: String) {
+    actual fun debugLog(message: String) {
         val line = synchronized(debugTime) { debugTime.format(java.util.Date()) } + " [${deviceName}] " + message
         println("RLConnect $line")
         runCatching {
@@ -300,7 +268,7 @@ object WindowsRecordLabsConnect {
     private fun peerName(id: String?): String = id?.let { synchronized(seen) { seen[it]?.name } ?: it.take(8) } ?: "-"
 
     /** Called by the app once its player is prepared, so a deferred takeover can run. */
-    fun notifyPlayerReady() {
+    actual fun notifyPlayerReady() {
         if (pendingTakeoverTerm == null) return
         handleExecutor.execute { completePendingTakeover(force = false) }
         // The player's "ready" can reach the app a moment after this call: checked again
@@ -377,25 +345,25 @@ object WindowsRecordLabsConnect {
     private val peerEndpoints = linkedMapOf<String, InetSocketAddress>()
     private val peerObservedEndpoints = linkedMapOf<String, InetSocketAddress>()
     private val _devices = MutableStateFlow<List<ConnectDevice>>(emptyList())
-    val devices: StateFlow<List<ConnectDevice>> = _devices.asStateFlow()
+    actual val devices: StateFlow<List<ConnectDevice>> = _devices.asStateFlow()
     private val sentPackets = AtomicLong(0)
     private val receivedPackets = AtomicLong(0)
     private val rejectedAccountPackets = AtomicLong(0)
     private val _discoveryStatus = MutableStateFlow(WindowsConnectDiscoveryStatus())
-    val discoveryStatus: StateFlow<WindowsConnectDiscoveryStatus> = _discoveryStatus.asStateFlow()
+    actual val discoveryStatus: StateFlow<WindowsConnectDiscoveryStatus> = _discoveryStatus.asStateFlow()
     private val _remoteOwnerId = MutableStateFlow<String?>(null)
-    val remoteOwnerId: StateFlow<String?> = _remoteOwnerId.asStateFlow()
-    val localDeviceId: String get() = localId
+    actual val remoteOwnerId: StateFlow<String?> = _remoteOwnerId.asStateFlow()
+    actual val localDeviceId: String get() = localId
 
-    fun start(
+    actual fun start(
         accountKeys: Collection<String>,
         deviceName: String,
         playbackProvider: () -> ConnectPlaybackState?,
         onRemoteState: (ConnectPlaybackState) -> Unit,
         onCommand: (String, Long?, Track?) -> Unit,
-        onLocalOwnership: ((handedTrackId: String?, handedPositionMs: Long?) -> Unit)? = null,
-        onTransferStalled: ((String) -> Unit)? = null,
-        onTakeoverPrepare: ((ConnectPlaybackState) -> Unit)? = null,
+        onLocalOwnership: ((handedTrackId: String?, handedPositionMs: Long?) -> Unit)?,
+        onTransferStalled: ((String) -> Unit)?,
+        onTakeoverPrepare: ((ConnectPlaybackState) -> Unit)?,
     ) {
         val fingerprints = accountKeys.map(String::trim).filter(String::isNotBlank)
             .map(::fingerprint).toSet()
@@ -459,7 +427,7 @@ object WindowsRecordLabsConnect {
         subnetScan = executor.scheduleAtFixedRate(::doSubnetScan, 6_000L, 30_000L, TimeUnit.MILLISECONDS)
     }
 
-    fun stop() {
+    actual fun stop() {
         running.set(false)
         ConnectRelay.stop()
         lanHeardAt.clear()
@@ -491,7 +459,7 @@ object WindowsRecordLabsConnect {
         _discoveryStatus.value = _discoveryStatus.value.copy(running = false, listenerReady = false)
     }
 
-    fun takePlaybackOwnership(requestedTerm: Long? = null) = takePlaybackOwnership(requestedTerm, handoff = false)
+    actual fun takePlaybackOwnership(requestedTerm: Long?) = takePlaybackOwnership(requestedTerm, handoff = false)
 
     /**
      * A song started on this device. [userStarted] (it plays at once, picked by the
@@ -499,13 +467,13 @@ object WindowsRecordLabsConnect {
      * and follows this one (one output at a time, like Spotify Connect). A song only
      * loaded paused (restored at launch) never takes the sound from another device.
      */
-    fun takePlaybackOwnership(userStarted: Boolean) {
+    actual fun takePlaybackOwnership(userStarted: Boolean) {
         if (!running.get()) return
         handleExecutor.execute { takePlaybackOwnership(null, handoff = userStarted) }
     }
 
     /** Play pressed on this device while it is not following another one: it becomes the only output. */
-    fun claimForLocalPlay() {
+    actual fun claimForLocalPlay() {
         if (!running.get() || _remoteOwnerId.value != null) return
         handleExecutor.execute {
             if (_remoteOwnerId.value == null) takePlaybackOwnership(null, handoff = true)
@@ -544,7 +512,7 @@ object WindowsRecordLabsConnect {
         }.toString())
     }
 
-    fun selectPlaybackDevice(deviceId: String): Boolean {
+    actual fun selectPlaybackDevice(deviceId: String): Boolean {
         debugLog("picked ${if (deviceId == localId) "this device" else peerName(deviceId)} as output; current output ${peerName(_remoteOwnerId.value) .takeIf { _remoteOwnerId.value != null } ?: "this device"}")
         pickedHereFrom = null
         if (deviceId == localId) {
@@ -669,13 +637,13 @@ object WindowsRecordLabsConnect {
         }.toString())
     }
 
-    fun configureBluetooth(sender: ((String) -> Unit)?) {
+    actual fun configureBluetooth(sender: ((String) -> Unit)?) {
         bluetoothSender = sender
     }
 
-    fun receiveBluetooth(raw: String) = dispatch(raw, null, PORT)
+    actual fun receiveBluetooth(raw: String) { dispatch(raw, null, PORT) }
 
-    fun sendCommand(command: String, positionMs: Long? = null): Boolean {
+    actual fun sendCommand(command: String, positionMs: Long?): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -686,9 +654,9 @@ object WindowsRecordLabsConnect {
         return true
     }
 
-    fun hasRemotePlaybackDevice(): Boolean = _remoteOwnerId.value != null
+    actual fun hasRemotePlaybackDevice(): Boolean = _remoteOwnerId.value != null
 
-    fun sendPlayTrack(track: Track): Boolean {
+    actual fun sendPlayTrack(track: Track): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -705,7 +673,7 @@ object WindowsRecordLabsConnect {
     }
 
     /** Adds a song immediately after the host's current queue item. */
-    fun sendQueueNext(track: Track): Boolean {
+    actual fun sendQueueNext(track: Track): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -733,7 +701,7 @@ object WindowsRecordLabsConnect {
     }
 
     /** Reorders the active output queue using a stable track id. */
-    fun sendQueueMove(trackId: String, toIndex: Int): Boolean {
+    actual fun sendQueueMove(trackId: String, toIndex: Int): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -746,7 +714,7 @@ object WindowsRecordLabsConnect {
     }
 
     /** Acknowledges that this silent controller has prepared the host track. */
-    fun sendTrackReady(ownerId: String, trackId: String) {
+    actual fun sendTrackReady(ownerId: String, trackId: String) {
         if (ownerId.isBlank() || trackId.isBlank()) return
         sendTo(ownerId, buildJsonObject {
             envelope("command")

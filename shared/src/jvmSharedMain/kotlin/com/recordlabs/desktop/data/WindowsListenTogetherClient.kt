@@ -1,6 +1,7 @@
 package com.recordlabs.desktop.data
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -13,26 +14,10 @@ import java.util.zip.GZIPInputStream
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
 
-enum class ListenTogetherConnection { Disconnected, Connecting, Connected, InRoom, Error }
-data class ListenTogetherJoinRequest(val userId: String, val username: String)
-data class ListenTogetherPlaybackSync(
-    val action: String,
-    val track: Track? = null,
-    val trackId: String? = null,
-    val positionMs: Long = 0L,
-    val serverTimeMs: Long = 0L,
-    val queue: List<Track> = emptyList(),
-    val queueTitle: String? = null,
-    val sequence: Long = 0L,
-)
-data class ListenTogetherTrackSuggestion(val suggestionId: String, val username: String, val track: Track)
-data class ListenTogetherUser(val userId: String, val username: String, val isHost: Boolean, val isConnected: Boolean = true)
-data class ListenTogetherGuestCommand(val action: String, val sequence: Long)
-/** Something the room did that this device shows as a short notice (a suggestion arrived, was added...). */
-data class ListenTogetherNotice(val text: String, val sequence: Long)
+
 
 /** First Windows implementation of Android's MetroServer protobuf protocol. */
-object WindowsListenTogetherClient {
+actual object WindowsListenTogetherClient {
     // Record Labs' own server (Render): the Meowery server only lets Metrolist host rooms.
     const val serverUrl = "wss://record-labs-listen-server.onrender.com/ws"
     // Generous timeouts: a sleeping free server takes up to a minute to wake.
@@ -85,30 +70,30 @@ object WindowsListenTogetherClient {
     }, 10, 10, TimeUnit.SECONDS)
 
     private val _connection = MutableStateFlow(ListenTogetherConnection.Disconnected)
-    val connection = _connection.asStateFlow()
+    actual val connection: StateFlow<ListenTogetherConnection> = _connection.asStateFlow()
     private val _roomCode = MutableStateFlow<String?>(null)
-    val roomCode = _roomCode.asStateFlow()
+    actual val roomCode: StateFlow<String?> = _roomCode.asStateFlow()
     private val _message = MutableStateFlow("Not connected")
-    val message = _message.asStateFlow()
+    actual val message: StateFlow<String> = _message.asStateFlow()
     private val _isHost = MutableStateFlow(false)
-    val isHost = _isHost.asStateFlow()
+    actual val isHost: StateFlow<Boolean> = _isHost.asStateFlow()
     private val _pendingJoinRequests = MutableStateFlow<List<ListenTogetherJoinRequest>>(emptyList())
-    val pendingJoinRequests = _pendingJoinRequests.asStateFlow()
+    actual val pendingJoinRequests: StateFlow<List<ListenTogetherJoinRequest>> = _pendingJoinRequests.asStateFlow()
     private val _playbackSync = MutableStateFlow<ListenTogetherPlaybackSync?>(null)
-    val playbackSync = _playbackSync.asStateFlow()
+    actual val playbackSync: StateFlow<ListenTogetherPlaybackSync?> = _playbackSync.asStateFlow()
     private var syncSequence = 0L
     private val _pendingSuggestions = MutableStateFlow<List<ListenTogetherTrackSuggestion>>(emptyList())
-    val pendingSuggestions = _pendingSuggestions.asStateFlow()
+    actual val pendingSuggestions: StateFlow<List<ListenTogetherTrackSuggestion>> = _pendingSuggestions.asStateFlow()
     private val _users = MutableStateFlow<List<ListenTogetherUser>>(emptyList())
-    val users = _users.asStateFlow()
+    actual val users: StateFlow<List<ListenTogetherUser>> = _users.asStateFlow()
     private val _bufferingUsers = MutableStateFlow<List<String>>(emptyList())
-    val bufferingUsers = _bufferingUsers.asStateFlow()
+    actual val bufferingUsers: StateFlow<List<String>> = _bufferingUsers.asStateFlow()
     private val _guestCommand = MutableStateFlow<ListenTogetherGuestCommand?>(null)
-    val guestCommand = _guestCommand.asStateFlow()
+    actual val guestCommand: StateFlow<ListenTogetherGuestCommand?> = _guestCommand.asStateFlow()
     private var guestCommandSequence = 0L
     private val _notice = MutableStateFlow<ListenTogetherNotice?>(null)
     /** Short messages for the app's notice line (suggestions on the host, their answer on the guest). */
-    val notice = _notice.asStateFlow()
+    actual val notice: StateFlow<ListenTogetherNotice?> = _notice.asStateFlow()
     private var noticeSequence = 0L
     private fun postNotice(text: String) { _notice.value = ListenTogetherNotice(text, ++noticeSequence) }
     /**
@@ -161,7 +146,7 @@ object WindowsListenTogetherClient {
      * moves it up to play next itself and answers what happened (null: not there, add it).
      * Set by the app window.
      */
-    @Volatile var hostAlreadyHas: ((Track) -> String?)? = null
+    @Volatile actual var hostAlreadyHas: ((Track) -> String?)? = null
     /** Suggestions received (by id), for approving them later. */
     private val suggestionTracks = java.util.concurrent.ConcurrentHashMap<String, ListenTogetherTrackSuggestion>()
     private var localUsername = ""
@@ -169,7 +154,7 @@ object WindowsListenTogetherClient {
     private var lastRemoteTrack: Track? = null
     private var lastRemoteQueue: List<Track> = emptyList()
 
-    fun createRoom(username: String) {
+    actual fun createRoom(username: String) {
         if (username.isBlank()) return
         localUsername = username.trim()
         intentionalClose = false
@@ -178,7 +163,7 @@ object WindowsListenTogetherClient {
         connect(envelope("create_room", protoMessage(1 to username.trim())))
     }
 
-    fun joinRoom(roomCode: String, username: String) {
+    actual fun joinRoom(roomCode: String, username: String) {
         if (roomCode.isBlank() || username.isBlank()) return
         localUsername = username.trim()
         intentionalClose = false
@@ -187,7 +172,7 @@ object WindowsListenTogetherClient {
         connect(envelope("join_room", protoMessage(1 to roomCode.trim().uppercase(), 2 to username.trim())))
     }
 
-    fun leave() {
+    actual fun leave() {
         intentionalClose = true
         val current = socket
         socket = null
@@ -248,7 +233,7 @@ object WindowsListenTogetherClient {
         _message.value = reason
     }
 
-    fun approveJoin(userId: String) {
+    actual fun approveJoin(userId: String) {
         if (userId.isBlank()) return
         answered.add(userId)
         sendControl("approve_join", protoMessage(1 to userId))
@@ -256,7 +241,7 @@ object WindowsListenTogetherClient {
         _message.value = "Join request approved"
     }
 
-    fun rejectJoin(userId: String) {
+    actual fun rejectJoin(userId: String) {
         if (userId.isBlank()) return
         answered.add(userId)
         sendControl("reject_join", protoMessage(1 to userId))
@@ -264,13 +249,12 @@ object WindowsListenTogetherClient {
         _message.value = "Join request rejected"
     }
 
-    fun broadcastPlayback(
+    actual fun broadcastPlayback(
         action: String,
-        track: Track? = null,
-        positionMs: Long = 0L,
-        queue: List<Track> = emptyList(),
-        queueTitle: String? = null,
-    ) {
+        track: Track?,
+        positionMs: Long,
+        queue: List<Track>,
+        queueTitle: String?,) {
         if (_connection.value != ListenTogetherConnection.InRoom || !_isHost.value) return
         // The room's queue is what comes after the song (the server's model): the app's
         // own queue also holds the songs already played, which listeners then saw as
@@ -289,23 +273,23 @@ object WindowsListenTogetherClient {
         socket?.send(ByteString.of(*envelope("playback_action", fields.joinBytes())))
     }
 
-    fun sendBufferReady(trackId: String) {
+    actual fun sendBufferReady(trackId: String) {
         if (_connection.value != ListenTogetherConnection.InRoom || trackId.isBlank()) return
         socket?.send(ByteString.of(*envelope("buffer_ready", protoMessage(1 to trackId.trim()))))
         _message.value = "Ready, waiting for everyone…"
     }
 
-    fun kickUser(userId: String) {
+    actual fun kickUser(userId: String) {
         if (!_isHost.value || userId.isBlank() || userId == localUserId) return
         socket?.send(ByteString.of(*envelope("kick_user", protoMessage(1 to userId))))
     }
 
-    fun transferHost(userId: String) {
+    actual fun transferHost(userId: String) {
         if (!_isHost.value || userId.isBlank() || userId == localUserId) return
         socket?.send(ByteString.of(*envelope("transfer_host", protoMessage(1 to userId))))
     }
 
-    fun requestSync() {
+    actual fun requestSync() {
         if (_connection.value == ListenTogetherConnection.InRoom) {
             socket?.send(ByteString.of(*envelope("request_sync", byteArrayOf())))
         }
@@ -316,23 +300,23 @@ object WindowsListenTogetherClient {
      * blip the app used to act as if it had left, so a tap played the song on this
      * device and the guest went its own way.
      */
-    fun isGuestNow(): Boolean = !_isHost.value && _roomCode.value != null &&
+    actual fun isGuestNow(): Boolean = !_isHost.value && _roomCode.value != null &&
         _connection.value.let { it == ListenTogetherConnection.InRoom || it == ListenTogetherConnection.Connecting || it == ListenTogetherConnection.Connected }
 
-    fun suggestTrack(track: Track) {
+    actual fun suggestTrack(track: Track) {
         // Also while coming back after a dropped connection: sent once back in the room.
         if (sessionToken.isBlank() || _isHost.value) return
         sendControl("suggest_track", protoBytes(1 to trackPayload(track)))
     }
 
-    fun sendGuestCommand(action: String) {
+    actual fun sendGuestCommand(action: String) {
         if (sessionToken.isBlank() || _isHost.value) return
         // Never twice (a play/pause sent again would undo itself); only held while offline.
         val track = Track(id = "GUEST_CMD:$action", title = "Guest Command", artist = "")
         sendControl("suggest_track", protoBytes(1 to trackPayload(track)), resendIfLost = false)
     }
 
-    fun approveSuggestion(suggestionId: String) {
+    actual fun approveSuggestion(suggestionId: String) {
         answered.add(suggestionId)
         val suggestion = suggestionTracks.remove(suggestionId)
         _pendingSuggestions.value = _pendingSuggestions.value.filterNot { it.suggestionId == suggestionId }
@@ -348,7 +332,7 @@ object WindowsListenTogetherClient {
         suggestion?.let { postNotice("Added \"${it.track.title}\" from ${it.username}") }
     }
 
-    fun rejectSuggestion(suggestionId: String) {
+    actual fun rejectSuggestion(suggestionId: String) {
         answered.add(suggestionId)
         suggestionTracks.remove(suggestionId)
         sendReject(suggestionId, "")

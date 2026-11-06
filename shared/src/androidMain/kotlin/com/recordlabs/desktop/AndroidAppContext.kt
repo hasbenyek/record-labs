@@ -23,7 +23,7 @@ actual fun copyToClipboard(text: String) {
     }
 }
 
-actual fun pickMusicFolder(title: String, onPicked: (java.io.File) -> Unit) {
+actual fun pickMusicFolder(title: String, onPicked: (com.recordlabs.desktop.platform.File) -> Unit) {
     runCatching {
         Toast.makeText(AndroidAppContext.context, "Local music folders are not available on Android yet", Toast.LENGTH_SHORT).show()
     }
@@ -33,15 +33,15 @@ actual fun pickMusicFolder(title: String, onPicked: (java.io.File) -> Unit) {
 private fun backupFolder(): java.io.File =
     (AndroidAppContext.context.getExternalFilesDir("backups") ?: java.io.File(AndroidAppContext.context.filesDir, "backups")).apply { mkdirs() }
 
-actual fun pickBackupSaveFile(defaultName: String, onPicked: (java.io.File) -> Unit) {
-    runCatching { onPicked(java.io.File(backupFolder(), defaultName)) }
+actual fun pickBackupSaveFile(defaultName: String, onPicked: (com.recordlabs.desktop.platform.File) -> Unit) {
+    runCatching { onPicked(com.recordlabs.desktop.platform.File.wrap(java.io.File(backupFolder(), defaultName))) }
 }
 
-actual fun pickBackupOpenFile(onPicked: (java.io.File) -> Unit) {
+actual fun pickBackupOpenFile(onPicked: (com.recordlabs.desktop.platform.File) -> Unit) {
     val newest = runCatching {
         backupFolder().listFiles { file -> file.isFile && file.extension.equals("zip", true) }?.maxByOrNull { it.lastModified() }
     }.getOrNull()
-    if (newest != null) onPicked(newest)
+    if (newest != null) onPicked(com.recordlabs.desktop.platform.File.wrap(newest))
     else runCatching {
         Toast.makeText(AndroidAppContext.context, "No backup found in ${backupFolder().absolutePath}", Toast.LENGTH_LONG).show()
     }

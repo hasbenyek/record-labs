@@ -98,12 +98,20 @@ kotlin {
             implementation(compose.ui)
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+            implementation("io.ktor:ktor-client-core:3.5.0")
+            implementation("io.ktor:ktor-client-content-negotiation:3.5.0")
+            implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.0")
+            implementation(compose.materialIconsExtended)
+            implementation("io.coil-kt.coil3:coil-compose:3.3.0")
+            implementation("io.coil-kt.coil3:coil-network-ktor3:3.3.0")
         }
         if (iosEnabled) {
             val iosMain by creating {
                 dependsOn(commonMain.get())
                 dependencies {
                     implementation(compose.materialIconsExtended)
+                    implementation("com.squareup.okio:okio:3.10.2")
+                    implementation("io.ktor:ktor-client-darwin:3.5.0")
                 }
             }
             getByName("iosArm64Main").dependsOn(iosMain)
