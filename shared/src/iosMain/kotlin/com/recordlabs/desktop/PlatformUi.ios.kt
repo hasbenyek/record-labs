@@ -20,12 +20,14 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import com.recordlabs.desktop.data.Track
+import com.recordlabs.desktop.ui.RecordLabsConnectIcon
 import com.recordlabs.desktop.platform.File
 import com.recordlabs.desktop.platform.toByteArray
 import platform.Foundation.NSBundle
@@ -93,36 +95,21 @@ internal object IosResources {
     }
 }
 
-private class SvgPainter(private val dom: org.jetbrains.skia.svg.SVGDOM, private val size: Size) : Painter() {
-    override val intrinsicSize: Size get() = size
-    override fun DrawScope.onDraw() {
-        drawIntoCanvas { canvas ->
-            val native = canvas.nativeCanvas
-            dom.setContainerSize(this.size.width, this.size.height)
-            native.save()
-            dom.render(native)
-            native.restore()
-        }
-    }
-}
-
 private class EmptyPainter : Painter() {
     override val intrinsicSize: Size get() = Size(24f, 24f)
     override fun DrawScope.onDraw() = Unit
 }
 
 @Composable
-actual fun appPainter(name: String): Painter = remember(name) {
-    val bytes = IosResources.bytes(name) ?: return@remember EmptyPainter()
-    runCatching {
-        if (name.endsWith(".svg", ignoreCase = true)) {
-            val dom = org.jetbrains.skia.svg.SVGDOM(org.jetbrains.skia.Data.makeFromBytes(bytes))
-            val root = dom.root
-            val width = root?.width?.value ?: 24f
-            val height = root?.height?.value ?: 24f
-            SvgPainter(dom, Size(width, height))
-        } else BitmapPainter(decodeImageBitmap(bytes))
-    }.getOrElse { EmptyPainter() }
+actual fun appPainter(name: String): Painter {
+    // The Record Labs Connect icon as a vector, as on Android: it scales to the icon's
+    // size and takes its tint (drawn as an SVG it stayed at 24 pixels, a third of the
+    // other icons on an iPhone screen).
+    if (name.endsWith(".svg", ignoreCase = true)) return rememberVectorPainter(RecordLabsConnectIcon)
+    return remember(name) {
+        val bytes = IosResources.bytes(name) ?: return@remember EmptyPainter()
+        runCatching<Painter> { BitmapPainter(decodeImageBitmap(bytes)) }.getOrElse { EmptyPainter() }
+    }
 }
 
 actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap =

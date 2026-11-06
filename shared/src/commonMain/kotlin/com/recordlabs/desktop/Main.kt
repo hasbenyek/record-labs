@@ -2568,8 +2568,9 @@ internal fun RecordLabsWindow(
             val latestLandscapeSearchExpanded by rememberUpdatedState(landscapeSearchExpanded)
             val latestSearchBoxFocused by rememberUpdatedState(searchBoxFocused)
             val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-            androidx.compose.runtime.CompositionLocalProvider(LocalOpenCatalog provides ::openCatalogPage, LocalOpenTrackAlbum provides ::openTrackAlbum, LocalOpenTrackArtist provides ::openTrackArtist) {
-            BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().menuAnchorTracker().pointerInput(Unit) {
+            // iPhone: the app fills the screen under the status bar and home indicator (EdgeToEdge.kt).
+            androidx.compose.runtime.CompositionLocalProvider(LocalOpenCatalog provides ::openCatalogPage, LocalOpenTrackAlbum provides ::openTrackAlbum, LocalOpenTrackArtist provides ::openTrackArtist, LocalEdgeInsets provides rememberEdgeInsets()) {
+            BoxWithConstraints(Modifier.fillMaxSize().appSafeArea().menuAnchorTracker().pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -2622,7 +2623,7 @@ internal fun RecordLabsWindow(
 
                     if (catalogDestination != null) {
                     Box(Modifier.fillMaxSize().hiddenUnderOpenSheet()) {
-                    Row(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxSize().pageEdgePadding(compact)) {
                         if (!compact) { Spacer(Modifier.width(76.dp)) }
                         Box(Modifier.weight(1f).fillMaxHeight().progressiveHeaderBlur(compact = compact)) {
                             CatalogPage(
@@ -2734,10 +2735,12 @@ internal fun RecordLabsWindow(
                     if (compact) {
                         Scaffold(
                             backgroundColor = Background,
+                            // iPhone: the status bar and home indicator are left to LocalEdgeInsets.
+                            contentWindowInsets = if (AppPlatform.isIos) WindowInsets(0, 0, 0, 0) else androidx.compose.material.ScaffoldDefaults.contentWindowInsets,
                         ) { padding ->
-                            Box(Modifier.fillMaxSize().padding(padding)) {
+                            Box(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true)) {
                                 Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp)) {
-                                    androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight) { profileContent() }
+                                    androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) { profileContent() }
                                 }
                                 CompactBottomBar(Modifier.align(Alignment.BottomCenter)) {
                                     CompactPlayerDock(
@@ -2776,7 +2779,7 @@ homeLoading = homeLoading,
 } else {
                         // The queue panel runs the full height (as on every other page);
                         // only the page itself leaves room for the header.
-                        Row(Modifier.fillMaxSize()) {
+                        Row(Modifier.fillMaxSize().pageEdgePadding(compact = false)) {
                         Column(Modifier.weight(1f).fillMaxHeight()) {
                             // Room for the shared header drawn over every page.
                             Spacer(Modifier.height(72.dp))
@@ -2833,9 +2836,11 @@ homeLoading = homeLoading,
                 } else if (compact) {
                     Scaffold(
                         backgroundColor = Background,
-                        contentWindowInsets = WindowInsets.navigationBars,
+                        // iPhone: the status bar and home indicator are left to LocalEdgeInsets
+                        // (the navigation used to sit a home indicator's height too high).
+                        contentWindowInsets = if (AppPlatform.isIos) WindowInsets(0, 0, 0, 0) else WindowInsets.navigationBars,
                     ) { padding ->
-                        Row(Modifier.fillMaxSize().padding(padding)) {
+                        Row(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true)) {
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                         // The search box slides away while scrolling down (like the dock shrinking)
                         // and comes back on scrolling up; it stays while it is being used.
@@ -2845,7 +2850,7 @@ homeLoading = homeLoading,
                             label = "compact-header-hide",
                         )
                         Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value })) {
-                            androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight) {
+                            androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) {
                             MainContent(section, compact = true, homeListState = homeListState, repository = repository, homeFeed = homeFeed, homeLoading = homeLoading, homeError = homeError, searchHistory = searchHistory, searchQuery = searchQuery, searchFilter = searchFilter, searchResults = searchResults, searchSubmitGeneration = searchSubmitGeneration, libraryTarget = libraryTarget, onLibraryNavigate = ::openLibrary, onLibraryBack = ::navigateBack, library = library, onCreatePlaylist = { name -> libraryStore.createPlaylist(name).also { if (it) library = libraryStore.snapshot() } }, onTrack = ::playTrack, onSearchTrack = ::playSearchTrack, onTrackMore = { trackMenuTarget = it }, onPlayNext = ::enqueueTrack, onOpenCatalog = ::openCatalogPage, onHomeItem = ::playHomeItem, onListenTogether = ::openListenTogether, onHomeRefresh = {
                                 scope.launch {
                                     performHomeLoad(null, true)
@@ -2907,7 +2912,7 @@ homeLoading = homeLoading,
                         }
                     }
                 } else {
-                    Box(Modifier.fillMaxSize().hiddenUnderOpenSheet()) {
+                    Box(Modifier.fillMaxSize().hiddenUnderOpenSheet().pageEdgePadding(compact = false)) {
                         Row(Modifier.fillMaxSize()) {
                         Spacer(Modifier.width(76.dp))
                         Box(Modifier.weight(1f).fillMaxHeight().progressiveHeaderBlur(compact = false)) {
@@ -3465,6 +3470,7 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
                     name = AppPlatform.deviceName,
                     platform = when {
                         AppPlatform.isAndroid -> "Android"
+                        AppPlatform.isIos -> "iPhone"
                         AppPlatform.isLinux -> "Linux"
                         else -> "Windows"
                     } + " • This device",
@@ -4348,7 +4354,8 @@ internal fun CompactBottomBar(modifier: Modifier = Modifier, content: @Composabl
                 drawRect(Brush.verticalGradient(0f to Color.Transparent, 0.45f to Color.Black.copy(alpha = 0.35f), 1f to Color.Black.copy(alpha = 0.65f)))
             },
         )
-        content()
+        // iPhone: above the home indicator (the shade still runs down to the screen's edge).
+        Box(Modifier.padding(bottom = LocalEdgeInsets.current.bottom)) { content() }
     }
 }
 
@@ -7328,7 +7335,8 @@ private fun CatalogPage(
         val rowWidth = maxWidth - 48.dp
         // Portrait album / playlist: the artwork's colours behind the page, as on
         // the player and lyrics pages.
-        if (compact && destination.kind != "Artist") PlayerAmbientBackground(loaded.artworkUrl)
+        // iPhone: the colours run on up under the status bar too.
+        if (compact && destination.kind != "Artist") PlayerAmbientBackground(loaded.artworkUrl, Modifier.fillMaxSize().bleedEdges(LocalEdgeInsets.current.top, 0.dp))
         LazyColumn(
             Modifier.fillMaxSize().pageScrollbar(catalogListState)
                 // Artist pages scroll by click-and-drag too, like the home page.
@@ -8072,11 +8080,11 @@ private fun String.lowResBlurThumbnailUrl(): String {
  * each other (see AmbientArtworkBackground), sampled from a small thumbnail.
  */
 @Composable
-private fun PlayerAmbientBackground(artworkUrl: String?) {
+private fun PlayerAmbientBackground(artworkUrl: String?, modifier: Modifier = Modifier.fillMaxSize()) {
     val model = remember(artworkUrl) {
         artworkUrl?.let { url -> LocalMusicBridge.parseLocalArtworkFile(url) ?: url.lowResBlurThumbnailUrl() }
     }
-    AmbientArtworkBackground(model, Background)
+    AmbientArtworkBackground(model, Background, modifier)
 }
 
 
@@ -8300,14 +8308,16 @@ internal fun PlayerPage(
     // Portrait shows the queue in place of the artwork, not as a side panel.
     var portraitLayout by remember { mutableStateOf(true) }
 
-    BoxWithConstraints(Modifier.fillMaxSize().offset { IntOffset(0, animatedOffsetY.roundToInt()) }) {
+    // iPhone: the page stays clear of the status bar and home indicator; its background
+    // runs on under them (EdgeToEdge.kt).
+    BoxWithConstraints(Modifier.fillMaxSize().offset { IntOffset(0, animatedOffsetY.roundToInt()) }.playerEdgePadding()) {
         // Portrait or landscape is decided from the whole page, before the queue panel takes
         // its width: measured after it, a page just over the limit flipped between the two.
         val pageCompact = isCompactLayout(maxWidth, maxHeight)
         androidx.compose.runtime.SideEffect { if (portraitLayout != pageCompact) portraitLayout = pageCompact }
         // During a swap to the other page, or while the portrait card grows or shrinks, the
         // shared background behind is shown instead.
-        Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (PlayerPageSwap.active || sheetCardDrawsBackground) 0f else 1f }) {
+        Box(Modifier.fillMaxSize().playerBackgroundBleed().graphicsLayer { alpha = if (PlayerPageSwap.active || sheetCardDrawsBackground) 0f else 1f }) {
             PlayerAmbientBackground(track.artworkUrl)
         }
         
@@ -8380,10 +8390,13 @@ internal fun PlayerPage(
                         )
                         val versionToggle = rememberTrackVersionToggleState()
                         Box(Modifier.fillMaxWidth().height(boxHeight).trackVersionActivity(versionToggle)) {
+                        // iPhone: the cover runs on up under the status bar (a video keeps its place).
+                        val coverBleedTop = LocalEdgeInsets.current.top * (1f - videoShape)
                         Box(
                             Modifier
                                 .fillMaxWidth()
                                 .height(boxHeight)
+                                .bleedEdges(coverBleedTop, 0.dp)
                                 .trackVersionSwipe(track)
                                 .padding(start = 16.dp * wideShape, end = 16.dp * wideShape, top = 56.dp * wideShape, bottom = 8.dp * wideShape)
                                 .artworkFlightSlot(big = true)
@@ -9520,13 +9533,14 @@ internal fun LyricsPage(
     // the lines are drawn (see [LyricsAtPosition]), not here: the whole page used to
     // recompose with every position update.
 
-    BoxWithConstraints(Modifier.fillMaxSize().offset { IntOffset(0, animatedPageOffsetY.roundToInt()) }) {
+    // iPhone: clear of the status bar and home indicator, the background under them (as PlayerPage).
+    BoxWithConstraints(Modifier.fillMaxSize().offset { IntOffset(0, animatedPageOffsetY.roundToInt()) }.playerEdgePadding()) {
         // Decided from the whole page, before the queue panel takes its width (see PlayerPage).
         val pageLandscape = !isCompactLayout(maxWidth, maxHeight)
         androidx.compose.runtime.SideEffect { if (isLandscapeLayout != pageLandscape) isLandscapeLayout = pageLandscape }
         // During a swap to the other page, or while the portrait card grows or shrinks, the
         // shared background behind is shown instead.
-        Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (PlayerPageSwap.active || sheetCardDrawsBackground) 0f else 1f }) {
+        Box(Modifier.fillMaxSize().playerBackgroundBleed().graphicsLayer { alpha = if (PlayerPageSwap.active || sheetCardDrawsBackground) 0f else 1f }) {
             PlayerAmbientBackground(track.artworkUrl)
         }
         

@@ -47,6 +47,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.recordlabs.ios
+        # The app icon (iosApp/Assets.xcassets): the same orange "R" as Android and the desktop.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         ENABLE_BITCODE: NO
