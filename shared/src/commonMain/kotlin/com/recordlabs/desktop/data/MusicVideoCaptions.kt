@@ -34,7 +34,7 @@ private fun attribute(attributes: String, name: String): String? =
 
 private fun decodeEntities(text: String): String = NUMERIC_ENTITY.replace(text) { match ->
     val code = match.groupValues[2].toIntOrNull(if (match.groupValues[1].isNotEmpty()) 16 else 10)
-    if (code != null && Character.isValidCodePoint(code)) String(Character.toChars(code)) else match.value
+    code?.let(::codePointText) ?: match.value
 }
     .replace("&quot;", "\"")
     .replace("&apos;", "'")
@@ -42,6 +42,16 @@ private fun decodeEntities(text: String): String = NUMERIC_ENTITY.replace(text) 
     .replace("&gt;", ">")
     .replace("&nbsp;", " ")
     .replace("&amp;", "&")
+
+/** The character of a Unicode code point (null for an invalid one); plain Kotlin, for every platform. */
+private fun codePointText(code: Int): String? = when {
+    code < 0 || code > 0x10FFFF || code in 0xD800..0xDFFF -> null
+    code < 0x10000 -> code.toChar().toString()
+    else -> {
+        val rest = code - 0x10000
+        charArrayOf(((rest shr 10) + 0xD800).toChar(), ((rest and 0x3FF) + 0xDC00).toChar()).concatToString()
+    }
+}
 
 private fun cleanCaptionText(raw: String): String = decodeEntities(TAG.replace(BREAK.replace(raw, "\n"), ""))
     .lines()

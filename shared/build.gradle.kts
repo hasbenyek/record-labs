@@ -18,6 +18,11 @@ plugins {
 val androidEnabled = gradle.extensions.extraProperties.let { it.has("recordLabs.androidSdk") && it["recordLabs.androidSdk"] == true }
 if (androidEnabled) apply(plugin = "com.android.kotlin.multiplatform.library")
 
+// iOS (in progress): the iPhone app is built only when asked, with -Precordlabs.ios=true
+// (the macOS build on GitHub Actions, or a check that the shared code compiles for iOS).
+// Without it the desktop and Android builds stay exactly as they were.
+val iosEnabled = providers.gradleProperty("recordlabs.ios").orNull == "true"
+
 val hostOs: String = System.getProperty("os.name").lowercase()
 val isWindowsHost = hostOs.startsWith("windows")
 val isLinuxHost = hostOs.contains("linux")
@@ -66,6 +71,14 @@ val generateListenTogetherKey by tasks.registering {
 kotlin {
     jvmToolchain(21)
     jvm()
+    if (iosEnabled) {
+        listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+            target.binaries.framework {
+                baseName = "RecordLabsShared"
+                isStatic = true
+            }
+        }
+    }
     if (androidEnabled) {
         extensions.configure<com.android.build.api.dsl.KotlinMultiplatformAndroidLibraryTarget>("android") {
             namespace = "com.recordlabs.shared"
@@ -76,6 +89,26 @@ kotlin {
     }
 
     sourceSets {
+        // Code for every platform (desktop, Android, iOS): plain Kotlin and Compose only,
+        // no Java library. Moved here from jvmSharedMain step by step for the iOS app.
+        commonMain.dependencies {
+            implementation(compose.runtime)
+            implementation(compose.foundation)
+            implementation(compose.material)
+            implementation(compose.ui)
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+            implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+        }
+        if (iosEnabled) {
+            val iosMain by creating {
+                dependsOn(commonMain.get())
+                dependencies {
+                    implementation(compose.materialIconsExtended)
+                }
+            }
+            getByName("iosArm64Main").dependsOn(iosMain)
+            getByName("iosSimulatorArm64Main").dependsOn(iosMain)
+        }
         val jvmSharedMain by creating {
             dependsOn(commonMain.get())
             kotlin.srcDir(generateListenTogetherKey)
@@ -136,5 +169,18 @@ kotlin {
                 implementation("androidx.browser:browser:1.8.0")
             }
         }
+    }
+}
+
+// iPhone app: Record-Labs-<version>.ipa (unsigned, for Sideloadly) in build/ios, on a Mac:
+// ./gradlew :shared:buildIosIpa -Precordlabs.ios=true  (needs Xcode and XcodeGen)
+if (iosEnabled) {
+    tasks.register<Exec>("buildIosIpa") {
+        group = "ios"
+        description = "Builds the iPhone app as an unsigned .ipa (for Sideloadly)."
+        dependsOn("linkReleaseFrameworkIosArm64")
+        workingDir = rootProject.projectDir
+        environment("SKIP_GRADLE", "1")
+        commandLine("bash", "iosApp/build-ipa.sh")
     }
 }
