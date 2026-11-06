@@ -5,8 +5,9 @@ name: Android release
 # the repository's latest release:
 #   Record-Labs-<version>.apk and Record-Labs-<version>.apk.sha256
 #
-# The app is built as com.recordlabs.music and signed with the key of the 1.9.x
-# releases (repository secrets), so it installs over them as an update. The 1.9.x app
+# The app is built as com.recordlabs.music.debug, the id the 1.9.x releases were
+# published with, and signed with their key (repository secrets), so it installs over
+# them as an update. The 1.9.x app
 # reads /releases/latest (a newer tag, an .apk and a .sha256 file) and shows an update
 # notification; 2.x shows its own update banner.
 #
@@ -50,6 +51,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           v="$(sed -n 's/^val appVersionName = "\(.*\)"/\1/p' androidApp/build.gradle.kts | tr -d '\r' | head -1)"
           test -n "$v" || { echo "::error::No appVersionName in androidApp/build.gradle.kts"; exit 1; }
@@ -60,7 +62,9 @@ jobs:
           echo "tag=v$v" >> "$GITHUB_OUTPUT"
           # main: only a version that is not released yet (raise versionName to release).
           publish=true
-          if [[ "$GITHUB_REF" == refs/heads/* ]] && gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # "[rebuild release]" in the commit message builds it again and replaces its files.
+          if [[ "$GITHUB_REF" == refs/heads/* ]] && gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 &&
+            [[ "$HEAD_MESSAGE" != *"[rebuild release]"* ]]; then
             echo "v$v is already released: nothing to do"; publish=false
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
@@ -78,7 +82,7 @@ jobs:
         if: steps.version.outputs.publish == 'true'
         shell: bash
         env:
-          RECORDLABS_APPLICATION_ID: com.recordlabs.music
+          RECORDLABS_APPLICATION_ID: com.recordlabs.music.debug
           RL_RELEASE_STORE_FILE: ${{ runner.temp }}/recordlabs.keystore
           RL_RELEASE_STORE_PASSWORD: ${{ secrets.RECORDLABS_KEYSTORE_PASSWORD }}
           RL_RELEASE_KEY_ALIAS: ${{ secrets.RECORDLABS_KEY_ALIAS }}
@@ -114,7 +118,7 @@ jobs:
             echo "::error::The APK is not signed with the key of the 1.9.x releases ($SIGNER)"; exit 1
           fi
           "$BUILD_TOOLS/aapt2" dump badging "$APK_IN" | head -1 | tee badging.txt
-          grep -q "name='com.recordlabs.music'" badging.txt || { echo "::error::Wrong application id"; exit 1; }
+          grep -q "name='com.recordlabs.music.debug'" badging.txt || { echo "::error::Wrong application id"; exit 1; }
           APK="Record-Labs-${{ steps.version.outputs.version }}.apk"
           cp "$APK_IN" "$APK"
           sha256sum "$APK" > "$APK.sha256"

@@ -19,8 +19,8 @@ android {
     namespace = "com.recordlabs.android"
     compileSdk = 36
     defaultConfig {
-        // Releases on GitHub (the workflow) are com.recordlabs.music, the id of the 1.9.x
-        // app, so they install over it. Local builds keep their own id: they are signed
+        // Releases on GitHub (the workflow) are com.recordlabs.music.debug, the id the
+        // 1.9.x app was published with, so they install over it. Local builds keep their own id: they are signed
         // with another key and would not install over a release.
         applicationId = System.getenv("RECORDLABS_APPLICATION_ID")?.takeIf(String::isNotBlank) ?: "com.recordlabs.android"
         minSdk = 26
