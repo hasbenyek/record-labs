@@ -16,8 +16,11 @@ targets:
     platform: iOS
     sources:
       - iosApp
-      # The app's pictures and fonts (the desktop's resources), as the "resources" folder.
-      - path: ../src/main/resources
+      # The app's pictures and fonts (the desktop's src/main/resources), copied by
+      # build-ipa.sh as the "AppAssets" folder. Not "resources": iOS reads a bundle
+      # with a Resources folder as an old-style bundle and then finds no Info.plist
+      # ("Missing bundle ID" when installing).
+      - path: build/AppAssets
         type: folder
         buildPhase: resources
     info:

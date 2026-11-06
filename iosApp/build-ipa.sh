@@ -19,6 +19,9 @@ fi
 
 command -v xcodegen >/dev/null || { echo "xcodegen is missing (brew install xcodegen)"; exit 1; }
 cd "$ROOT/iosApp"
+# The app's pictures and fonts, as the bundle's AppAssets folder (see project.yml).
+rm -rf build/AppAssets && mkdir -p build
+cp -R "$ROOT/src/main/resources" build/AppAssets
 sed -i '' "s/MARKETING_VERSION: \".*\"/MARKETING_VERSION: \"$VERSION\"/" project.yml
 xcodegen generate
 xcodebuild \
@@ -33,6 +36,12 @@ xcodebuild \
 
 APP="$OUT/DerivedData/Build/Products/Release-iphoneos/RecordLabs.app"
 test -d "$APP" || { echo "No app was built"; exit 1; }
+# iOS refuses an app without a readable bundle id (and treats a top-level
+# Resources or Contents folder as another bundle layout): check before packing.
+if ls "$APP" | grep -qix -e resources -e contents; then echo "The app has a Resources/Contents folder"; exit 1; fi
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+test -n "$BUNDLE_ID" || { echo "The app has no bundle id"; exit 1; }
+echo "Bundle id: $BUNDLE_ID"
 rm -rf "$OUT/Payload" && mkdir -p "$OUT/Payload"
 cp -R "$APP" "$OUT/Payload/"
 IPA="$OUT/Record-Labs-$VERSION.ipa"

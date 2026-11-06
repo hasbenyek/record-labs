@@ -82,13 +82,13 @@ actual fun AnimatedTrackArtwork(
 @Composable
 actual fun GoogleLoginView(onAuthenticated: () -> Unit) = IosGoogleLoginView(onAuthenticated)
 
-/** The app's pictures (src/main/resources, copied into the app as "resources"). */
+/** The app's pictures and fonts (src/main/resources, copied into the app as "AppAssets"). */
 internal object IosResources {
     private val cache = HashMap<String, ByteArray?>()
     fun bytes(name: String): ByteArray? = com.recordlabs.desktop.platform.locked(cache) {
         cache.getOrPut(name) {
             val base = NSBundle.mainBundle.resourcePath ?: return@getOrPut null
-            NSData.dataWithContentsOfFile("$base/resources/$name")?.toByteArray()
+            NSData.dataWithContentsOfFile("$base/AppAssets/$name")?.toByteArray()
         }
     }
 }

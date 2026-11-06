@@ -2,3 +2,4 @@
 RecordLabs.xcodeproj/
 *.xcworkspace/
 xcuserdata/
+build/
