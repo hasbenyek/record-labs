@@ -40,6 +40,8 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         # Compose draws at the screen's full refresh rate (ProMotion).
         CADisableMinimumFrameDurationOnPhone: true
+        # Record Labs Connect finds the account's other devices on the same Wi-Fi.
+        NSLocalNetworkUsageDescription: Record Labs Connect finds your computers and phones on this Wi-Fi so you can play music on them and control them from here.
         # Music keeps playing in the background and on the lock screen.
         UIBackgroundModes:
           - audio

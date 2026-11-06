@@ -64,12 +64,20 @@ actual object MediaPlatform {
     actual fun align(song: ShortArray, video: ShortArray): List<CounterpartSegment>? = null
     actual fun decodeWebmOpus(data: ByteArray): ShortArray = ShortArray(0)
 
+    /** iPhone: AVPlayer reads the picture stream straight from YouTube (with its User-Agent). */
     actual fun openMusicVideoStream(
         videoId: String, remoteUrl: String, userAgent: String, contentLength: Long, head: ByteArray,
         width: Int, height: Int, quality: Int,
-    ): Any? = null
-    actual fun musicVideoStreamUrl(stream: Any): String = ""
+    ): Any? = IosMusicVideoStream(remoteUrl, userAgent)
+    actual fun musicVideoStreamUrl(stream: Any): String {
+        val video = stream as IosMusicVideoStream
+        IosStreamHeaders.remember(video.url, video.userAgent)
+        return video.url
+    }
 }
+
+/** A music video's picture stream on the iPhone: its address and the User-Agent it was made for. */
+class IosMusicVideoStream(val url: String, val userAgent: String)
 
 /** The User-Agent each stream URL was made for (AVPlayer sends it). */
 object IosStreamHeaders {

@@ -3482,7 +3482,9 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
                     androidx.compose.runtime.key(device.id) {
                         ConnectDeviceRow(
                             name = device.name,
-                            platform = device.platform.replaceFirstChar { it.uppercaseChar() } + if (device.overInternet) " • Over the internet" else " • Nearby",
+                            // An iPhone announces "ios": shown as "iPhone".
+                            platform = (if (device.platform.equals("ios", ignoreCase = true)) "iPhone" else device.platform.replaceFirstChar { it.uppercaseChar() }) +
+                                if (device.overInternet) " • Over the internet" else " • Nearby",
                             selected = remoteOwnerId == device.id,
                             onClick = { onSelect(device.id) },
                         )

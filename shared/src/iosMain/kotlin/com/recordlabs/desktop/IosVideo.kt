@@ -1,0 +1,477 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
+
+package com.recordlabs.desktop
+
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import com.recordlabs.desktop.data.IosStreamHeaders
+import com.recordlabs.desktop.data.Track
+import com.recordlabs.desktop.data.WindowsAnimatedArtworkRepository
+import com.recordlabs.desktop.data.WindowsMusicRepository
+import com.recordlabs.desktop.data.createPlaybackEngine
+import com.recordlabs.desktop.data.hasMusicVideo
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.convert
+import kotlinx.cinterop.usePinned
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import platform.AVFoundation.AVPlayer
+import platform.AVFoundation.AVPlayerItem
+import platform.AVFoundation.AVPlayerItemStatusFailed
+import platform.AVFoundation.AVPlayerItemVideoOutput
+import platform.AVFoundation.AVPlayerLooper
+import platform.AVFoundation.AVQueuePlayer
+import platform.AVFoundation.AVURLAsset
+import platform.AVFoundation.addOutput
+import platform.AVFoundation.allowsExternalPlayback
+import platform.AVFoundation.currentItem
+import platform.AVFoundation.currentTime
+import platform.AVFoundation.pause
+import platform.AVFoundation.play
+import platform.AVFoundation.muted
+import platform.AVFoundation.preferredMaximumResolution
+import platform.AVFoundation.preventsDisplaySleepDuringVideoPlayback
+import platform.AVFoundation.rate
+import platform.AVFoundation.removeOutput
+import platform.AVFoundation.replaceCurrentItemWithPlayerItem
+import platform.AVFoundation.seekToTime
+import platform.CoreGraphics.CGSizeMake
+import platform.CoreMedia.CMTimeGetSeconds
+import platform.CoreMedia.CMTimeMake
+import platform.CoreVideo.CVPixelBufferGetBaseAddress
+import platform.CoreVideo.CVPixelBufferGetBytesPerRow
+import platform.CoreVideo.CVPixelBufferGetHeight
+import platform.CoreVideo.CVPixelBufferGetWidth
+import platform.CoreVideo.CVPixelBufferLockBaseAddress
+import platform.CoreVideo.CVPixelBufferRelease
+import platform.CoreVideo.CVPixelBufferUnlockBaseAddress
+import platform.CoreVideo.kCVPixelBufferLock_ReadOnly
+import platform.Foundation.NSURL
+import platform.QuartzCore.CACurrentMediaTime
+import platform.posix.memcpy
+import kotlin.math.abs
+
+/**
+ * Videos on the iPhone: Apple Music's animated artwork and music videos, played
+ * muted by AVPlayer. Each picture is taken from the player (AVPlayerItemVideoOutput)
+ * and drawn by Compose like any image, so the video takes part in everything the
+ * artwork does: rounded corners, the fade at the bottom of the player, the blur
+ * as the cover gives way, and the player card growing and shrinking. (A UIKit video
+ * view would sit outside Compose's drawing and miss all of these.)
+ */
+internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, maxSide: Double) {
+    private val player: AVPlayer
+    private var looper: AVPlayerLooper? = null
+    /** Each item the player plays (a looped clip is several copies) with its picture output. */
+    private val outputs = ArrayList<Pair<AVPlayerItem, AVPlayerItemVideoOutput>>()
+
+    /** The newest picture (drawn by [VideoPicture]). */
+    var frame by mutableStateOf<ImageBitmap?>(null)
+        private set
+    /** Width / height of the video, once known. */
+    var aspect by mutableStateOf<Float?>(null)
+        private set
+    /** The first picture is there. */
+    var pictureShown by mutableStateOf(false)
+        private set
+    /** The stream could not be played. */
+    var failed by mutableStateOf(false)
+        private set
+
+    /** Pictures shown lately, closed a little later (Compose may still be drawing the last one). */
+    private val recent = ArrayDeque<org.jetbrains.skia.Image>()
+    private var lastPullAt = 0.0
+
+    init {
+        val link = NSURL.URLWithString(url)
+        val options: Map<Any?, Any?>? = userAgent?.let {
+            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to it))
+        }
+        fun newItem(): AVPlayerItem {
+            val asset = AVURLAsset(uRL = link!!, options = options)
+            return AVPlayerItem(asset = asset).apply {
+                // Sharp enough for the artwork's box, light on decoding and copying.
+                preferredMaximumResolution = CGSizeMake(maxSide, maxSide)
+            }
+        }
+        if (loop) {
+            val queue = AVQueuePlayer(items = emptyList<AVPlayerItem>())
+            // Seamless loop: AVPlayerLooper queues copies of the clip back to back.
+            looper = AVPlayerLooper.playerLooperWithPlayer(queue, templateItem = newItem())
+            player = queue
+        } else {
+            val item = newItem()
+            player = AVPlayer(playerItem = item)
+        }
+        player.muted = true
+        player.allowsExternalPlayback = false
+        player.preventsDisplaySleepDuringVideoPlayback = false
+        attachOutputs()
+    }
+
+    /** A picture output on every item (AVPlayerLooper makes its copies when it starts). */
+    private fun attachOutputs() {
+        val items: List<AVPlayerItem> = looper?.loopingPlayerItems?.filterIsInstance<AVPlayerItem>()
+            ?: listOfNotNull(player.currentItem)
+        for (item in items) {
+            if (outputs.any { it.first === item }) continue
+            val output = AVPlayerItemVideoOutput(
+                pixelBufferAttributes = mapOf<Any?, Any?>(
+                    // kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA
+                    "PixelFormatType" to 0x42475241,
+                ),
+            )
+            item.addOutput(output)
+            outputs += item to output
+        }
+    }
+
+    fun play() = player.play()
+    fun pause() = player.pause()
+
+    var rate: Float
+        get() = player.rate
+        set(value) { player.rate = value }
+
+    val positionMs: Long
+        get() = (CMTimeGetSeconds(player.currentTime()) * 1000.0).takeIf { !it.isNaN() }?.toLong() ?: 0L
+
+    fun seekTo(positionMs: Long) {
+        player.seekToTime(CMTimeMake(positionMs, 1000))
+    }
+
+    /** Takes the newest picture from the player, when there is one (on the UI thread). */
+    fun pull() {
+        val now = CACurrentMediaTime()
+        // At most ~30 pictures a second: the clips are 24-30 fps.
+        if (now - lastPullAt < 0.03) return
+        lastPullAt = now
+        val item = player.currentItem ?: return
+        if (item.status == AVPlayerItemStatusFailed) {
+            failed = true
+            return
+        }
+        if (outputs.none { it.first === item }) attachOutputs()
+        val output = outputs.firstOrNull { it.first === item }?.second ?: return
+        val time = output.itemTimeForHostTime(now)
+        if (!output.hasNewPixelBufferForItemTime(time)) return
+        val buffer = output.copyPixelBufferForItemTime(time, itemTimeForDisplay = null) ?: return
+        try {
+            CVPixelBufferLockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
+            val width = CVPixelBufferGetWidth(buffer).toInt()
+            val height = CVPixelBufferGetHeight(buffer).toInt()
+            val rowBytes = CVPixelBufferGetBytesPerRow(buffer).toInt()
+            val base = CVPixelBufferGetBaseAddress(buffer)
+            if (width <= 0 || height <= 0 || base == null) return
+            val bytes = ByteArray(rowBytes * height)
+            bytes.usePinned { memcpy(it.addressOf(0), base, bytes.size.convert()) }
+            CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
+            val image = org.jetbrains.skia.Image.makeRaster(
+                org.jetbrains.skia.ImageInfo(width, height, org.jetbrains.skia.ColorType.BGRA_8888, org.jetbrains.skia.ColorAlphaType.PREMUL),
+                bytes,
+                rowBytes,
+            )
+            frame = image.toComposeImageBitmap()
+            recent.addLast(image)
+            while (recent.size > 3) recent.removeFirst().close()
+            if (aspect == null) aspect = width.toFloat() / height
+            pictureShown = true
+        } catch (_: Throwable) {
+        } finally {
+            CVPixelBufferRelease(buffer)
+        }
+    }
+
+    fun release() {
+        looper?.disableLooping()
+        player.pause()
+        outputs.forEach { (item, output) -> item.removeOutput(output) }
+        outputs.clear()
+        player.replaceCurrentItemWithPlayerItem(null)
+        looper = null
+        frame = null
+        recent.forEach { it.close() }
+        recent.clear()
+    }
+}
+
+/** Draws the video's newest picture, filling ([ContentScale.Crop]) or fitting its box. */
+@Composable
+private fun VideoPicture(frames: IosVideoFrames, scale: ContentScale, modifier: Modifier) {
+    LaunchedEffect(frames) {
+        while (isActive) {
+            withFrameNanos { }
+            frames.pull()
+        }
+    }
+    Spacer(
+        modifier.drawBehind {
+            val image = frames.frame ?: return@drawBehind
+            val imageWidth = image.width.toFloat()
+            val imageHeight = image.height.toFloat()
+            if (imageWidth <= 0f || imageHeight <= 0f || size.width <= 0f || size.height <= 0f) return@drawBehind
+            val crop = scale == ContentScale.Crop
+            val factor = if (crop) maxOf(size.width / imageWidth, size.height / imageHeight)
+            else minOf(size.width / imageWidth, size.height / imageHeight)
+            if (crop) {
+                // The middle of the picture, as large as the box allows.
+                val srcWidth = size.width / factor
+                val srcHeight = size.height / factor
+                drawImage(
+                    image,
+                    srcOffset = IntOffset(((imageWidth - srcWidth) / 2f).toInt(), ((imageHeight - srcHeight) / 2f).toInt()),
+                    srcSize = IntSize(srcWidth.toInt().coerceAtLeast(1), srcHeight.toInt().coerceAtLeast(1)),
+                    dstSize = IntSize(size.width.toInt(), size.height.toInt()),
+                )
+            } else {
+                val width = imageWidth * factor
+                val height = imageHeight * factor
+                drawImage(
+                    image,
+                    dstOffset = IntOffset(((size.width - width) / 2f).toInt(), ((size.height - height) / 2f).toInt()),
+                    dstSize = IntSize(width.toInt(), height.toInt()),
+                )
+            }
+        },
+    )
+}
+
+/** The cover over the video until its first picture: it blurs and fades away (as on Android). */
+@Composable
+private fun CoverOverVideo(coverUrl: String?, pictureShown: Boolean, shape: RoundedCornerShape) {
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(pictureShown) {
+        reveal.animateTo(if (pictureShown) 1f else 0f, tween(1_000, easing = LinearEasing))
+    }
+    Artwork(
+        coverUrl,
+        Modifier.fillMaxSize().graphicsLayer {
+            val progress = reveal.value
+            alpha = 1f - ((progress - 0.15f) / 0.85f).coerceIn(0f, 1f)
+            renderEffect = if (progress > 0f && progress < 1f) {
+                val t = (progress / 0.6f).coerceIn(0f, 1f)
+                val radius = 22f * density * ((1.0 - kotlin.math.cos(kotlin.math.PI * t)) / 2.0).toFloat()
+                BlurEffect(radius, radius, TileMode.Clamp)
+            } else null
+        },
+        shape,
+    )
+}
+
+/**
+ * Apple Music animated artwork (found like on the desktop and Android), looping muted
+ * under the cover; the cover stays when the song has none.
+ */
+@Composable
+internal fun IosAnimatedArtwork(
+    track: Track,
+    coverUrl: String?,
+    modifier: Modifier,
+    shape: RoundedCornerShape,
+    scale: ContentScale,
+    onAspectRatio: (Float?) -> Unit,
+) {
+    var streamUrl by remember(track.id) { mutableStateOf<String?>(null) }
+    var attempt by remember(track.id) { mutableStateOf(0) }
+    LaunchedEffect(track.id, track.title, track.artist, attempt) {
+        if (attempt > 0) {
+            WindowsAnimatedArtworkRepository.invalidate(track)
+            delay(1_500L * attempt)
+        }
+        var waitMs = 2_500L
+        while (isActive && streamUrl == null) {
+            val found = runCatching { WindowsAnimatedArtworkRepository.find(track) }.getOrNull()
+            if (found != null) {
+                // An iPhone decodes Apple's HEVC clip itself.
+                streamUrl = found.streamUrl
+                break
+            }
+            if (WindowsAnimatedArtworkRepository.isDefinitiveMiss(track) || waitMs > 12_000L) break
+            delay(waitMs)
+            waitMs = waitMs * 3 / 2
+        }
+    }
+    val latestAspect by rememberUpdatedState(onAspectRatio)
+    // The artwork stays square: the clip is cropped into the box.
+    LaunchedEffect(Unit) { latestAspect(null) }
+    DisposableEffect(track.id) { onDispose { latestAspect(null) } }
+    val windowShown = MainWindowActivity.isShown
+    var pictureShown by remember(track.id) { mutableStateOf(false) }
+    Box(modifier.clip(shape)) {
+        streamUrl?.let { url ->
+            key(url) {
+                val frames = remember(url) { IosVideoFrames(url, userAgent = null, loop = true, maxSide = 1080.0) }
+                DisposableEffect(frames) { onDispose { frames.release() } }
+                LaunchedEffect(frames, windowShown) { if (windowShown) frames.play() else frames.pause() }
+                LaunchedEffect(frames.pictureShown) { pictureShown = frames.pictureShown }
+                // A clip that fails (or shows nothing): the H.264 one, then the cover.
+                LaunchedEffect(frames) {
+                    var waited = 0L
+                    while (isActive && !frames.pictureShown && !frames.failed && waited < 10_000L) {
+                        delay(250)
+                        waited += 250
+                    }
+                    if (frames.pictureShown) return@LaunchedEffect
+                    pictureShown = false
+                    val alternate = WindowsAnimatedArtworkRepository.alternateStreamUrl(url)
+                    if (alternate != null && alternate != url) streamUrl = alternate
+                    else {
+                        streamUrl = null
+                        if (attempt < 2) attempt++
+                    }
+                }
+                VideoPicture(frames, ContentScale.Crop, Modifier.fillMaxSize())
+            }
+        }
+        CoverOverVideo(coverUrl, pictureShown, shape)
+    }
+}
+
+private object IosMusicVideoSource {
+    val repository by lazy { WindowsMusicRepository() }
+}
+
+/** Picture height asked for (as on Android: sharp in the artwork's box, light on the phone). */
+private const val MUSIC_VIDEO_HEIGHT = 480
+/** The picture jumps to the sound only when further apart than this (else it catches up). */
+private const val MUSIC_VIDEO_MAX_DRIFT_MS = 2_500L
+
+/**
+ * A music video in the artwork's place (video mode): muted, kept in step with the song
+ * the player plays (its sound is the video's own).
+ */
+@Composable
+internal fun IosMusicVideo(
+    track: Track,
+    coverUrl: String?,
+    modifier: Modifier,
+    shape: RoundedCornerShape,
+    scale: ContentScale,
+    onAspectRatio: (Float?) -> Unit,
+) {
+    // The picture stream, then (if it does not play) YouTube's own iPhone stream.
+    var source by remember(track.id) { mutableStateOf<Pair<String, String?>?>(null) }
+    var useHls by remember(track.id) { mutableStateOf(false) }
+    var gaveUp by remember(track.id) { mutableStateOf(false) }
+    LaunchedEffect(track.id, useHls) {
+        source = null
+        var waitMs = 1_500L
+        while (isActive && waitMs <= 6_000L) {
+            val found = if (!useHls) {
+                runCatching { IosMusicVideoSource.repository.musicVideoStreamUrl(track.id, MUSIC_VIDEO_HEIGHT) }.getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { it to IosStreamHeaders.userAgentFor(it) }
+            } else {
+                runCatching { IosMusicVideoSource.repository.musicVideoHlsUrl(track.id) }.getOrNull()
+                    ?.let { (url, agent) -> url to agent }
+            }
+            if (found != null) {
+                source = found
+                return@LaunchedEffect
+            }
+            delay(waitMs)
+            waitMs *= 2
+        }
+        if (!useHls) useHls = true else gaveUp = true
+    }
+    val latestAspect by rememberUpdatedState(onAspectRatio)
+    DisposableEffect(track.id) { onDispose { latestAspect(null) } }
+    var pictureShown by remember(track.id) { mutableStateOf(false) }
+    Box(modifier.clip(shape)) {
+        source?.let { (url, agent) ->
+            key(url) {
+                val frames = remember(url) { IosVideoFrames(url, agent, loop = false, maxSide = 1280.0) }
+                DisposableEffect(frames) { onDispose { frames.release() } }
+                LaunchedEffect(frames.pictureShown) { pictureShown = frames.pictureShown }
+                LaunchedEffect(frames.aspect) { frames.aspect?.let { latestAspect((it * 100f).toInt() / 100f) } }
+                // Kept in step with the song: play and pause with it, jump to its place when
+                // far apart (start, a seek), otherwise run a little faster or slower.
+                LaunchedEffect(frames) {
+                    val engine = createPlaybackEngine()
+                    var waited = 0L
+                    var started = false
+                    while (isActive) {
+                        val playing = engine.isPlaying && engine.currentTrack?.id == track.id && MainWindowActivity.shownNow
+                        val audioMs = engine.positionMs
+                        if (!started) {
+                            frames.seekTo(audioMs)
+                            started = true
+                        }
+                        if (playing) {
+                            val drift = frames.positionMs - audioMs
+                            var speed = 1f
+                            if (abs(drift) > MUSIC_VIDEO_MAX_DRIFT_MS) frames.seekTo(audioMs)
+                            else if (abs(drift) > 80L) speed = (1f - drift / 1000f * 0.5f).coerceIn(0.85f, 1.15f)
+                            if (abs(frames.rate - speed) > 0.01f) frames.rate = speed
+                        } else if (frames.rate != 0f) {
+                            frames.pause()
+                        }
+                        // Nothing shown after a while: the other stream (or the cover).
+                        if (!frames.pictureShown) {
+                            waited += 250
+                            if (frames.failed || waited > 12_000L) {
+                                if (!useHls) useHls = true else gaveUp = true
+                                return@LaunchedEffect
+                            }
+                        }
+                        delay(250)
+                    }
+                }
+                if (!gaveUp) VideoPicture(frames, scale, Modifier.fillMaxSize())
+            }
+        }
+        CoverOverVideo(coverUrl, pictureShown && !gaveUp, shape)
+    }
+}
+
+/** iPhone: the song's artwork, animated artwork or music video (see AnimatedTrackArtwork). */
+@Composable
+internal fun IosTrackArtwork(
+    track: Track,
+    modifier: Modifier,
+    shape: RoundedCornerShape,
+    enabled: Boolean,
+    musicVideoScale: ContentScale,
+    onMusicVideoAspectRatio: (Float?) -> Unit,
+) {
+    val firstArtist = remember(track.artist) {
+        track.artist.split(", ", " & ", " x ", " feat. ", " ft. ").firstOrNull()?.trim().orEmpty()
+    }
+    val coverUrl = remember(track.artworkUrl) { track.artworkUrl?.highQualityArtworkUrl() ?: track.artworkUrl }
+    if (track.hasMusicVideo) {
+        IosMusicVideo(track, coverUrl, modifier, shape, musicVideoScale, onMusicVideoAspectRatio)
+        return
+    }
+    if (!enabled || track.localPath != null || track.title.isBlank() || firstArtist.isBlank()) {
+        Artwork(coverUrl, modifier, shape)
+        return
+    }
+    IosAnimatedArtwork(track, coverUrl, modifier, shape, musicVideoScale, onMusicVideoAspectRatio)
+}

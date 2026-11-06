@@ -2183,6 +2183,39 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         MediaPlatform.openMusicVideoStream(videoId, format.url, format.userAgent, format.contentLength, head, format.width, format.height, format.quality)
     }.getOrNull()
 
+    /**
+     * iPhone: the music video as YouTube's own iPhone app gets it, an HLS playlist
+     * (picture and sound; the app shows the picture muted), with the User-Agent it is
+     * meant for. Used when the picture stream above cannot be played there. Null when
+     * the video has none.
+     */
+    suspend fun musicVideoHlsUrl(videoId: String): Pair<String, String>? = withContext(IoDispatcher) {
+        val client = PLAYBACK_CLIENTS.firstOrNull { it.name == "IOS" } ?: return@withContext null
+        runCatching {
+            val visitorData = playbackVisitorData() ?: return@runCatching null
+            val extras = client.contextExtras.takeIf { it.isNotBlank() }?.let { ",$it" }.orEmpty()
+            val bodyStr = """{"context":{"client":{"clientName":"${client.name}","clientVersion":"${client.version}","hl":"en","gl":"US"$extras,"visitorData":${JsonPrimitive(visitorData)}}},"videoId":"$videoId","contentCheckOk":true,"racyCheckOk":true}"""
+            val request = OkRequest.Builder()
+                .url("https://music.youtube.com/youtubei/v1/player?prettyPrint=false")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("User-Agent", client.userAgent)
+                .header("X-Goog-Api-Format-Version", "1")
+                .header("X-YouTube-Client-Name", client.id)
+                .header("X-YouTube-Client-Version", client.version)
+                .header("X-Goog-Visitor-Id", visitorData)
+                .header("Origin", "https://music.youtube.com")
+                .header("Referer", "https://music.youtube.com/")
+                .post(bodyStr.toOkBody("application/json"))
+                .build()
+            val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching null
+            val streaming = Json.parseToJsonElement(responseStr).jsonObject["streamingData"] as? JsonObject
+            streaming?.get("hlsManifestUrl")?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.startsWith("https://") }
+                ?.let { it to client.userAgent }
+        }.getOrNull()
+    }
+
     fun invalidateMusicVideo(videoId: String) {
         musicVideoCache.removeKeysIf { it.startsWith("$videoId@") }
         musicVideoPlayerCache.removeKeysIf { it.endsWith("/$videoId") }

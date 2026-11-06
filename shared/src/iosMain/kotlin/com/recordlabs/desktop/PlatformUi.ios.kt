@@ -3,6 +3,7 @@
 package com.recordlabs.desktop
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
@@ -67,7 +68,10 @@ actual object PlatformKeepAwake {
 
 actual fun prefetchAnimatedArtwork(remoteUrl: String) = Unit
 
-/** iOS (for now): the cover only; moving artwork and music videos come with the player. */
+/**
+ * The cover, Apple Music's animated artwork, or (video mode) the music video, as on
+ * Android: played by AVPlayer and drawn by Compose (IosVideo.kt).
+ */
 @Composable
 actual fun AnimatedTrackArtwork(
     track: Track,
@@ -78,7 +82,21 @@ actual fun AnimatedTrackArtwork(
     onMusicVideoAspectRatio: (Float?) -> Unit,
     showFullscreenButton: Boolean,
 ) {
-    Artwork(track.artworkUrl, modifier, shape)
+    // Only another song crossfades: the same song with updated details keeps its video
+    // running (see the Android version).
+    val latestById = remember { LinkedHashMap<String, Track>() }
+    latestById.remove(track.id)
+    latestById[track.id] = track
+    while (latestById.size > 4) latestById.remove(latestById.keys.first())
+    androidx.compose.animation.Crossfade(
+        targetState = track.id,
+        animationSpec = androidx.compose.animation.core.tween(450),
+        modifier = modifier,
+        label = "artwork-change",
+    ) { shownId ->
+        val shown = if (shownId == track.id) track else latestById[shownId] ?: track
+        IosTrackArtwork(shown, Modifier.fillMaxSize(), shape, enabled, musicVideoScale, onMusicVideoAspectRatio)
+    }
 }
 
 @Composable
