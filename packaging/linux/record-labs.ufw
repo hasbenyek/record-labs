@@ -1,0 +1,4 @@
+[record-labs]
+title=Record Labs Connect
+description=Lets Record Labs find and control your other Record Labs devices on the same network.
+ports=45922/udp|45923/tcp

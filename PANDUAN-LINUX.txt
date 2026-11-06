@@ -1,0 +1,101 @@
+RECORD LABS UNTUK LINUX — PANDUAN SOURCE CODE
+==============================================
+
+Folder ini berisi source code Record Labs (versi Linux dan Windows memakai kode yang sama).
+Bisa dipakai di Pop!_OS, Ubuntu, Linux Mint, Debian (juga Fedora, openSUSE, Arch untuk
+menjalankan langsung). Komputer 64-bit (x86_64).
+
+Buka Terminal di folder ini dulu (klik kanan di dalam folder > "Open in Terminal").
+
+
+1) JALANKAN LANGSUNG, TANPA INSTALLER   (sama seperti "gradlew.bat run" di Windows)
+-----------------------------------------------------------------------------------
+       ./run-linux.sh
+
+   - Pertama kali: memasang Java 21 dan VLC kalau belum ada (diminta password sekali),
+     mengunduh yt-dlp + Deno, lalu build (±5–10 menit). Berikutnya langsung terbuka.
+   - Bisa juga:  ./gradlew run   (kalau Java 21 dan VLC sudah terpasang).
+
+
+2) BUAT INSTALLER   (sama seperti "gradlew.bat packageMsi" di Windows)
+----------------------------------------------------------------------
+       ./build-installer-linux.sh
+
+   - Untuk Pop!_OS / Ubuntu / Debian / Mint. Memasang alat build, membundel VLC, lalu membuat:
+       build/linux-packages/  -> record-labs_<versi>_amd64.deb (+ .rpm, paket Arch)
+       build/linux-kit/       -> folder "linux-recordlabs" berisi .deb + install.sh, siap dibagikan
+   - Di akhir ditanya "Pasang Record Labs di komputer ini sekarang?" -> tekan Enter untuk memasang.
+   - Setelah terpasang: buka "Record Labs" dari menu aplikasi, atau ketik  record-labs
+   - Menghapus:  sudo apt purge record-labs
+
+
+LOGIN AKUN GOOGLE
+-----------------
+Tombol login membuka browser default komputer (seperti di Windows): Firefox, Chrome,
+Chromium, Brave, Edge atau Vivaldi (versi biasa, Snap atau Flatpak). Browser dibuka dengan
+profil sementara yang terpisah; login dengan akun Google di sana, tunggu YouTube Music tampil,
+lalu jendela itu tertutup sendiri dan Record Labs sudah login.
+
+
+FONT
+----
+Di Windows aplikasi memakai Segoe UI. Di Linux dipakai Segoe UI kalau terpasang; kalau tidak,
+Selawik (pengganti Segoe UI open-source dari Microsoft, sudah termasuk di aplikasi).
+Lirik (halaman lirik dan floating lyrics/PiP) memakai SF Pro Display kalau terpasang; kalau
+tidak, Inter Display (gratis, mirip SF Pro, sudah termasuk di aplikasi).
+
+
+RECORD LABS CONNECT
+-------------------
+Connect memakai Wi-Fi yang sama dan akun Google yang sama (port UDP 45922 dan TCP 45923).
+- Pop!_OS / Ubuntu: firewall (ufw) biasanya mati, tidak perlu apa-apa. Kalau ufw dinyalakan:
+       sudo ufw allow 45922/udp && sudo ufw allow 45923/tcp
+- Fedora: zona bawaan desktop sudah mengizinkan. openSUSE (firewall aktif secara bawaan):
+       sudo firewall-cmd --permanent --add-port=45922/udp --add-port=45923/tcp && sudo firewall-cmd --reload
+  Kalau firewall memblokir, layar Devices Connect di aplikasi juga menampilkan perintah ini.
+- Cek tanpa login:   record-labs --self-test-connect
+  (buka Record Labs di HP/PC lain selama 20 detik; perangkat yang terdengar akan dicantumkan)
+- Jaringan tamu / "AP isolation" di router mencegah perangkat saling melihat.
+
+
+FLOATING LYRICS (PiP)
+---------------------
+Di desktop Wayland (COSMIC, KDE Plasma, sway, Hyprland) lirik melayang tampil sebagai overlay
+transparan di atas semua jendela, bisa digeser lewat strip atas dan diubah ukurannya lewat
+pojok kanan bawah. Di GNOME (dan sesi X11) memakai jendela biasa.
+
+
+TOMBOL MEDIA KEYBOARD
+---------------------
+Play/pause, next, previous dan stop di keyboard bekerja lewat MPRIS (kontrol media standar
+Linux), juga saat Record Labs di belakang. Lagu yang diputar juga muncul di kontrol media
+desktop (COSMIC/GNOME/KDE).
+
+
+LISTEN TOGETHER
+---------------
+Build resmi butuh kunci Listen Together di file  local.properties  (tidak ikut di folder ini):
+       LISTEN_TOGETHER_KEY=...
+Salin file local.properties dari folder project Windows ke folder ini sebelum build/run.
+Tanpa kunci, aplikasi tetap jalan; hanya Listen Together yang ditolak server.
+
+
+CEK & MASALAH
+-------------
+- Cek audio, yt-dlp, Deno dan font (aplikasi terpasang):   record-labs --self-test-audio
+- Cek browser untuk login:                                  record-labs --self-test-login
+- Cek Record Labs Connect (jaringan, firewall, perangkat lain): record-labs --self-test-connect
+  (dari source:  ./gradlew run --args="--self-test-audio")
+- Pesan error: jalankan dari terminal (record-labs atau ./run-linux.sh) lalu lihat outputnya.
+- "bad interpreter" saat menjalankan ./gradlew: jalankan  sed -i 's/\r$//' gradlew
+
+
+ISI FOLDER
+----------
+  run-linux.sh, build-installer-linux.sh   script satu perintah (lihat di atas)
+  src/                                     source code aplikasi (Kotlin / Compose Desktop)
+  packaging/linux/                         script build Linux (bundle VLC, .deb/.rpm/AppImage, uji instalasi)
+  build.gradle.kts, gradlew                build Gradle (sama dengan versi Windows)
+  native-player/                           helper audio khusus Windows (tidak dipakai di Linux)
+File besar khusus Windows (VLC Windows, helper .NET, .exe) tidak disertakan di folder ini;
+semuanya ada di repo GitHub hasbenyek/record-labs-windows untuk build Windows.

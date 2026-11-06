@@ -1,11 +1,13 @@
+// YouTube Music InnerTube client of the Record Labs Android app (folder 3),
+// used by the Android build for playback (stream resolution, poToken, cipher).
 plugins {
     id("com.android.library")
-    alias(libs.plugins.kotlin.serialization)
+    kotlin("plugin.serialization")
 }
 
 android {
     namespace = "com.recordlabs.innertube"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 26
@@ -13,27 +15,21 @@ android {
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
-}
-
-kotlin {
-    jvmToolchain(21)
 }
 
 dependencies {
-    implementation(libs.ktor.client.core)
-    implementation(libs.ktor.client.okhttp)
-    implementation(libs.ktor.client.content.negotiation)
-    implementation(libs.ktor.serialization.json)
-    implementation(libs.ktor.client.encoding)
-    implementation(libs.brotli)
+    implementation("io.ktor:ktor-client-core:3.5.0")
+    implementation("io.ktor:ktor-client-okhttp:3.5.0")
+    implementation("io.ktor:ktor-client-content-negotiation:3.5.0")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.0")
+    implementation("io.ktor:ktor-client-encoding:3.5.0")
+    implementation("org.brotli:dec:0.1.2")
     implementation("com.github.MetrolistGroup:MetrolistExtractor:f0a00f5") {
         exclude(group = "com.google.protobuf")
     }
-    implementation(libs.timber)
-    testImplementation(libs.junit)
-
-    coreLibraryDesugaring(libs.desugaring)
+    implementation("com.jakewharton.timber:timber:5.0.1")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 }

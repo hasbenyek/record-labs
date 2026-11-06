@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash icon (Android 12+): the app icon itself, larger, with no white box behind it.
+     The splash shows a 288 dp area whose visible part is a 192 dp circle: an inset
+     of 27% leaves a ~132 dp icon that fits in that circle whole. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:inset="27%">
+    <bitmap
+        android:src="@drawable/splash_icon_art"
+        android:filter="true"
+        android:antialias="true" />
+</inset>

@@ -1,0 +1,211 @@
+name: Release (Windows + Linux)
+
+# A new version on main (or a pushed tag v1.2.3) builds every installer and
+# publishes one release:
+#   - Windows: the .msi (on a Windows runner, like "gradlew.bat packageMsi")
+#   - Linux: .deb, .rpm, AppImage, Arch tarball + PKGBUILD, each tested in a
+#     clean container of its distributions
+# Installed apps find the release and pick the file for their own system.
+# Pushes to linux-port only build and test (no release).
+#
+# Needs the repository secret LISTEN_TOGETHER_KEY (Settings > Secrets and
+# variables > Actions); without it the installers work but Listen Together is refused.
+
+# In this repository (the Android app's releases) it runs only when started by hand:
+# the desktop releases are published in hasbenyek/record-labs-windows, and the tags
+# v1.2.3 here belong to the Android app (android-release.yml).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Ubuntu 22.04: the bundled libraries then need only glibc 2.35, older than
+    # every supported distribution.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libvlc-dev vlc-plugin-base vlc-plugin-video-output patchelf rpm fakeroot xz-utils curl unzip
+          curl -fsSL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+          # AppImages need FUSE to run; extract-and-run works without it.
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+
+      - name: Version
+        id: version
+        run: |
+          v="$(sed -n 's/^val appVersion = "\(.*\)"/\1/p' build.gradle.kts | tr -d '\r' | head -1)"
+          # The app compares its own version (from build.gradle.kts / AppInfo)
+          # with the release tag, so they must match or it would always see an update.
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$v" ]]; then
+            echo "::error::Tag ${GITHUB_REF#refs/tags/} does not match version $v in build.gradle.kts"; exit 1
+          fi
+          grep -q "BUILD_VERSION = \"$v\"" shared/src/jvmSharedMain/kotlin/com/recordlabs/desktop/data/AppSettings.kt \
+            || { echo "::error::AppInfo.BUILD_VERSION in AppSettings.kt is not $v"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          LISTEN_TOGETHER_KEY: ${{ secrets.LISTEN_TOGETHER_KEY }}
+        run: packaging/linux/build-all.sh "${{ steps.version.outputs.version }}"
+
+      - name: Unit tests (audio through libVLC, Linux updater, Deno daemon)
+        run: ./gradlew --no-daemon test --tests "com.recordlabs.desktop.data.LinuxVlcPlaybackTest" --tests "com.recordlabs.desktop.data.AppUpdaterLinuxTest" --tests "com.recordlabs.desktop.data.LinuxDenoCipherDaemonTest" --tests "com.recordlabs.desktop.data.LinuxFirewallTest"
+
+      # One download per package type (each is ~250 MB; together over 1 GB).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: build/linux-packages/*_amd64.deb
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-rpm
+          path: build/linux-packages/*.x86_64.rpm
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: |
+            build/linux-packages/*.AppImage
+            build/linux-packages/*.zsync
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arch
+          path: |
+            build/linux-packages/*-linux-x86_64.tar.xz
+            build/linux-packages/PKGBUILD
+          compression-level: 0
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-checksums
+          path: build/linux-packages/SHA256SUMS*
+          if-no-files-found: ignore
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The .NET media helper (RecordLabs.NativePlayer) is compiled during the build.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build the .msi
+        env:
+          LISTEN_TOGETHER_KEY: ${{ secrets.LISTEN_TOGETHER_KEY }}
+        shell: pwsh
+        run: |
+          ./gradlew.bat --no-daemon packageMsi
+          $msi = Get-ChildItem -Recurse build -Filter *.msi | Where-Object { $_.FullName -match 'binaries\\main\\msi' } | Select-Object -First 1
+          if (-not $msi) { throw "No .msi was produced" }
+          New-Item -ItemType Directory -Force windows-installer | Out-Null
+          # A plain file name (GitHub would turn the space into a dot anyway).
+          Copy-Item $msi.FullName ("windows-installer/RecordLabs-" + ($msi.BaseName -replace '^Record Labs-', '') + ".msi")
+          Get-ChildItem windows-installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: windows-installer/*.msi
+          if-no-files-found: error
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: 'ubuntu:22.04',        artifact: linux-deb,  package: 'record-labs_*_amd64.deb' }
+          - { image: 'ubuntu:24.04',        artifact: linux-deb,  package: 'record-labs_*_amd64.deb' }
+          - { image: 'debian:12',           artifact: linux-deb,  package: 'record-labs_*_amd64.deb' }
+          - { image: 'fedora:42',           artifact: linux-rpm,  package: 'record-labs-*.x86_64.rpm' }
+          - { image: 'opensuse/tumbleweed', artifact: linux-rpm,  package: 'record-labs-*.x86_64.rpm' }
+          - { image: 'opensuse/leap:15.6',  artifact: linux-rpm,  package: 'record-labs-*.x86_64.rpm' }
+          - { image: 'archlinux:latest',    artifact: linux-arch, package: 'record-labs-*-linux-x86_64.tar.xz' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: packages
+      - name: Install and run in ${{ matrix.image }}
+        run: packaging/linux/test-install.sh "${{ matrix.image }}" packages/${{ matrix.package }} --gui
+
+  release:
+    # Only when every installer was built and the Linux ones passed their tests.
+    needs: [test, windows]
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Which release
+        id: which
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          v="$(sed -n 's/^val appVersion = "\(.*\)"/\1/p' build.gradle.kts | tr -d '\r' | head -1)"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          # main: only a version that has no release yet.
+          # (A draft left by an interrupted run is finished.)
+          if [ "$(gh release view "v$v" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null)" = "false" ]; then
+            echo "Release v$v already exists; nothing to publish."; echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Every installer (linux-* and windows-installer) into one folder.
+      - uses: actions/download-artifact@v4
+        if: steps.which.outputs.publish == 'true'
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Publish the release
+        if: steps.which.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.which.outputs.tag }}
+        run: |
+          ls -la packages
+          # Release notes (shown in the app under "What's new"): RELEASE_NOTES.md
+          # if present, else a short default. Edit them on GitHub afterwards if wanted.
+          if [ -s RELEASE_NOTES.md ]; then cp RELEASE_NOTES.md notes.md; else echo "Record Labs ${TAG#v}" > notes.md; fi
+          # Prepared as a draft and published only once every file is uploaded, so an
+          # app checking meanwhile never sees a release without its installer.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "Record Labs ${TAG#v}" --notes-file notes.md
+          fi
+          gh release upload "$TAG" packages/* --repo "$GITHUB_REPOSITORY" --clobber
+          # A normal (not pre-)release marked latest: the apps' update check skips drafts and
+          # pre-releases. Publishing also creates the tag on this commit if it doesn't exist.
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest

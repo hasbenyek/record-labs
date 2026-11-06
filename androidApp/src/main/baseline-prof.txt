@@ -1,0 +1,11 @@
+# Record Labs: compile the whole app ahead of time at install (with Compose's own
+# profiles from its libraries), so screens, lists and animations do not start out
+# interpreted. Wildcards: every class and method of these packages.
+HSPLcom/recordlabs/desktop/**->**(**)**
+Lcom/recordlabs/desktop/**;
+HSPLcom/recordlabs/android/**->**(**)**
+Lcom/recordlabs/android/**;
+HSPLcom/recordlabs/music/**->**(**)**
+Lcom/recordlabs/music/**;
+HSPLcom/recordlabs/innertube/**->**(**)**
+Lcom/recordlabs/innertube/**;

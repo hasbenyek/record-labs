@@ -1,0 +1,5 @@
+#!/bin/sh
+# AppImage entry point.
+HERE="$(dirname "$(readlink -f "$0")")"
+if [ -z "${LANG:-}${LC_ALL:-}${LC_CTYPE:-}" ]; then export LANG=C.UTF-8; fi
+exec "$HERE/opt/record-labs/bin/Record Labs" "$@"

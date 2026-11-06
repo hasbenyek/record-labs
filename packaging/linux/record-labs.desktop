@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Record Labs
+GenericName=Music Player
+Comment=Listen to YouTube Music with synced lyrics and music videos
+Exec=record-labs %U
+Icon=record-labs
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;youtube;lyrics;player;
+StartupNotify=true
+StartupWMClass=com-recordlabs-desktop-RecordLabsLauncher

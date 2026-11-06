@@ -1,0 +1,81 @@
+RECORD LABS UNTUK LINUX — PANDUAN INSTALL
+==========================================
+
+Isi folder ini
+--------------
+  record-labs_@VERSION@_amd64.deb   Aplikasi Record Labs (VLC, yt-dlp dan Deno sudah termasuk)
+  install.sh                       Memasang aplikasi (satu perintah)
+  uninstall.sh                     Menghapus aplikasi
+  PANDUAN-INSTALL.txt              Panduan ini
+
+Bisa dipakai di
+---------------
+  Pop!_OS 22.04 / 24.04, Ubuntu 22.04 atau lebih baru, Linux Mint 21+, Debian 12+
+  Komputer 64-bit (x86_64). Ukuran setelah terpasang sekitar 650 MB.
+
+
+CARA INSTALL
+------------
+1. Ekstrak arsip ini (klik kanan > Extract Here) sehingga ada folder "linux-recordlabs".
+2. Buka folder "linux-recordlabs", klik kanan di area kosong > "Open in Terminal".
+   (Atau buka Terminal lalu ketik:  cd ~/Downloads/linux-recordlabs )
+3. Jalankan:
+
+       bash install.sh
+
+   Masukkan password komputer saat diminta. Script ini memasang aplikasi beserta
+   library yang dibutuhkan, lalu mengecek audio. Kalau semuanya baik akan muncul:
+
+       SELF-TEST tool yt-dlp: ...
+       SELF-TEST tool deno: ...
+       SELF-TEST PASS: audio played to the end ...
+
+4. Buka "Record Labs" dari menu aplikasi (tekan tombol Super lalu ketik Record Labs),
+   atau ketik di terminal:  record-labs
+
+Cara lain tanpa terminal: klik dua kali file record-labs_@VERSION@_amd64.deb, lalu
+pilih Install (Pop!_OS membukanya dengan Eddy / App Center).
+
+
+LOGIN AKUN GOOGLE
+-----------------
+Login memakai browser berbasis Chromium: Google Chrome, Chromium, Brave, Edge atau Vivaldi.
+Firefox (bawaan Pop!_OS) tidak bisa dipakai untuk login. Memutar lagu tetap bisa tanpa login.
+
+
+UPDATE
+------
+Aplikasi mengecek versi baru sendiri (Profil > Settings). "Update now" mengunduh versi
+baru; setelah aplikasi ditutup akan muncul dialog password untuk memasangnya, lalu
+Record Labs terbuka lagi. Bisa juga memasang folder versi baru dengan  bash install.sh .
+
+
+MENGHAPUS
+---------
+       bash uninstall.sh
+
+Anda akan ditanya apakah data (library, riwayat, cache, unduhan) ikut dihapus.
+Atau tanpa script:  sudo apt purge record-labs
+
+
+LOKASI DATA
+-----------
+  Library, pengaturan, unduhan:  ~/.local/share/record-labs/
+  Cache sementara:               ~/.cache/record-labs/
+  Aplikasi:                      /opt/record-labs/
+
+
+KALAU ADA MASALAH
+-----------------
+- Cek audio dan komponen:   record-labs --self-test-audio
+- Lihat pesan error:        jalankan  record-labs  dari terminal, lalu tutup aplikasinya;
+                            pesan error muncul di terminal.
+- "Unable to locate package" / gagal unduh library: pastikan internet tersambung lalu
+  ulangi  bash install.sh .
+- Tidak ada suara: cek output suara di Settings > Sound, lalu jalankan self-test di atas.
+- Record Labs Connect tidak menemukan perangkat lain: semua perangkat harus di WiFi yang
+  sama; kalau firewall aktif (sudo ufw status), izinkan aplikasi atau matikan sementara.
+
+Belum tersedia di versi Linux: tombol media keyboard / kontrol musik di panel desktop,
+dan Record Labs Connect lewat Bluetooth (Connect lewat WiFi sudah bisa).
+@LISTEN_TOGETHER_NOTE@

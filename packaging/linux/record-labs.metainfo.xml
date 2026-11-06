@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.recordlabs.desktop</id>
+  <name>Record Labs</name>
+  <summary>Music player for YouTube Music</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>Record Labs plays YouTube Music with synced lyrics, music videos, Listen Together and Record Labs Connect.</p>
+  </description>
+  <launchable type="desktop-id">record-labs.desktop</launchable>
+  <url type="homepage">https://github.com/hasbenyek/record-labs-windows</url>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

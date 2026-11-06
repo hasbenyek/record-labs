@@ -1,52 +1,40 @@
-@file:Suppress("UnstableApiUsage")
+import java.util.Properties
 
 pluginManagement {
     repositories {
         google()
-        mavenCentral()
         gradlePluginPortal()
+        mavenCentral()
     }
 }
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-
     repositories {
         google()
         mavenCentral()
-        maven { setUrl("https://jitpack.io") }
-        maven { setUrl("https://maven.aliyun.com/repository/public") }
+        maven("https://jitpack.io")
     }
 }
 
-// F-Droid doesn't support foojay-resolver plugin
-// plugins {
-//     id("org.gradle.toolchains.foojay-resolver-convention") version("1.0.0")
-// }
+rootProject.name = "Record Labs Windows"
 
-rootProject.name = "Record Labs"
-include(":app")
-include(":innertube")
-include(":kugou")
-include(":lrclib")
+// Code shared by the desktop app (this root project) and the Android app.
+include(":shared")
 
-include(":lastfm")
-include(":betterlyrics")
-include(":shazamkit")
-include(":paxsenix")
-
-// Use a local copy of NewPipe Extractor by uncommenting the lines below.
-// We assume, that Record Labs and NewPipe Extractor have the same parent directory.
-// If this is not the case, please change the path in includeBuild().
-//
-// For this to work you also need to change the implementation in innertube/build.gradle.kts
-// to one which does not specify a version.
-// From:
-//      implementation(libs.newpipe.extractor)
-// To:
-//      implementation("com.github.teamnewpipe:NewPipeExtractor")
-//includeBuild("../NewPipeExtractor") {
-//    dependencySubstitution {
-//        substitute(module("com.github.teamnewpipe:NewPipeExtractor")).using(project(":extractor"))
-//    }
-//}
+// The Android app is only part of the build where an Android SDK is installed
+// (sdk.dir in local.properties, or ANDROID_HOME). Without it everything builds
+// as before: desktop only, and :shared without its Android target.
+val androidSdkAvailable: Boolean = run {
+    val properties = Properties()
+    val file = file("local.properties")
+    if (file.exists()) file.inputStream().use(properties::load)
+    val dir = properties.getProperty("sdk.dir") ?: System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    dir != null && File(dir).isDirectory
+}
+gradle.extensions.extraProperties["recordLabs.androidSdk"] = androidSdkAvailable
+if (androidSdkAvailable) {
+    include(":androidApp")
+    // The Android app's YouTube Music client (playback engine of the original Android app).
+    include(":innertube")
+}

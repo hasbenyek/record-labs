@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- firewalld service for Record Labs Connect (Fedora, openSUSE...).
+     Enable: sudo firewall-cmd --permanent --add-service=record-labs-connect && sudo firewall-cmd --reload -->
+<service>
+  <short>Record Labs Connect</short>
+  <description>Lets Record Labs find and control your other Record Labs devices on the same network.</description>
+  <port protocol="udp" port="45922"/>
+  <port protocol="tcp" port="45923"/>
+</service>

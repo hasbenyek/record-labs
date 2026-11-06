@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 12+ splash: the bare app icon (no white icon background), larger. -->
+    <style name="RecordLabsTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+    </style>
+</resources>

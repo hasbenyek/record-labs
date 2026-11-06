@@ -1,0 +1,1170 @@
+package com.recordlabs.desktop.data
+
+import java.io.File
+
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import java.util.concurrent.ConcurrentHashMap
+import java.security.MessageDigest
+
+data class GoogleAccountProfile(
+    val name: String,
+    val photoUrl: String?,
+    val email: String? = null,
+    val channelHandle: String? = null,
+)
+data class GoogleLibrarySnapshot(
+    val liked: List<Track>,
+    val playlists: List<WindowsPlaylist>,
+)
+
+class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseable {
+    private data class CachedStream(val url: String, val userAgent: String, val validUntilMs: Long)
+    private data class CachedSearch(val value: SearchResults, val validUntilMs: Long)
+    private data class CachedHome(val value: HomeFeed, val validUntilMs: Long)
+    private data class PlaybackClient(
+        val name: String,
+        val version: String,
+        val id: String,
+        val userAgent: String,
+        val contextExtras: String = "",
+    )
+
+    private val streamCache = ConcurrentHashMap<String, CachedStream>()
+    private val searchCache = ConcurrentHashMap<String, CachedSearch>()
+    private val homeCache = ConcurrentHashMap<String, CachedHome>()
+    private val client = HttpClient(CIO) {
+        install(HttpTimeout) {
+            requestTimeoutMillis = 12_000
+            connectTimeoutMillis = 8_000
+            socketTimeoutMillis = 12_000
+        }
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true; isLenient = true })
+        }
+    }
+
+    override suspend fun home(): HomeFeed = home(params = null)
+
+    /** Mirrors Android's YouTube.home(params): one canonical home request, including server chips. */
+    suspend fun home(params: String?): HomeFeed {
+        val cacheKey = params.orEmpty()
+        homeCache[cacheKey]?.takeIf { it.validUntilMs > System.currentTimeMillis() }?.let { return it.value }
+        val response = client.postJson(
+            "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+            browseBody(browseId = "FEmusic_home", params = params),
+        )
+        return response.toHomeFeed().also {
+            homeCache[cacheKey] = CachedHome(it, System.currentTimeMillis() + 10 * 60_000L)
+        }
+    }
+
+    suspend fun homeContinuation(token: String): HomeFeed {
+        val response = client.postJson(
+            "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+            browseBody(continuation = token),
+        )
+        return response.toHomeFeed()
+    }
+
+    suspend fun homeSupplement(): List<HomeShelf> = coroutineScope {
+        val explore = async {
+            runCatching {
+                val response = client.postJson(
+                    "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+                    browseBody(browseId = "FEmusic_explore"),
+                )
+                response.homeShelves()
+            }.getOrDefault(emptyList())
+        }
+        explore.await().distinctBy { it.title }
+    }
+
+    /** Desktop equivalent of Android's DB-backed Quick Picks, Daily Discover and Keep Listening. */
+    suspend fun personalizedHome(history: List<Track>, liked: List<Track>): List<HomeShelf> = coroutineScope {
+        val recent = history.distinctBy { it.id }.take(20)
+        val quickPicks = async {
+            recent.firstOrNull()?.let { seed -> nextRadioQueue(seed.id).take(20) }.orEmpty()
+        }
+        val dailyDiscover = liked.distinctBy { it.id }.take(5).map { seed ->
+            async { nextRadioQueue(seed.id).firstOrNull { it.id != seed.id } }
+        }.mapNotNull { it.await() }.distinctBy { it.id }
+
+        buildList {
+            quickPicks.await().takeIf { it.isNotEmpty() }?.let { tracks ->
+                add(HomeShelf("Quick picks", tracks.map { it.toHomeItem() }, HomeShelfLayout.List))
+            }
+            dailyDiscover.takeIf { it.isNotEmpty() }?.let { tracks ->
+                add(HomeShelf("Daily discover", tracks.map { it.toHomeItem() }))
+            }
+            recent.takeIf { it.isNotEmpty() }?.let { tracks ->
+                add(HomeShelf("Keep listening", tracks.map { it.toHomeItem() }))
+            }
+        }
+    }
+
+    override suspend fun search(query: String, filter: String?): SearchResults {
+        val cacheKey = "${query.trim().lowercase()}|${filter.orEmpty().lowercase()}"
+        searchCache[cacheKey]?.takeIf { it.validUntilMs > System.currentTimeMillis() }?.let { return it.value }
+        val filterParam = when (filter?.lowercase()) {
+            "songs" -> "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
+            "videos" -> "EgWKAQIQAWoKEAkQChAFEAMQBA%3D%3D"
+            "albums" -> "EgWKAQIYAWoKEAkQChAFEAMQBA%3D%3D"
+            "artists" -> "EgWKAQIgAWoKEAkQChAFEAMQBA%3D%3D"
+            "playlists" -> "EgeKAQQoADgBagwQDhAKEAMQBRAJEAQ%3D"
+            else -> null
+        }
+        val searchBody = buildJsonObject {
+            put("context", clientContext())
+            put("query", query)
+            filterParam?.let { put("params", it) }
+        }.toString()
+        val response = client.postJson(
+            "https://music.youtube.com/youtubei/v1/search?key=$API_KEY",
+            searchBody,
+        )
+
+        val filterChips = listOf("Songs", "Videos", "Albums", "Artists", "Playlists")
+
+        if (filter == null || filter.equals("All", ignoreCase = true)) {
+            val catalogItems = response.catalogItems()
+            val summaries = mutableListOf<SearchSummaryShelf>()
+            val allItems = mutableListOf<Track>()
+            
+            val shelves = response.findObjects("musicCardShelfRenderer")
+            for (shelf in shelves) {
+                val cardSubject = shelf["title"]?.allRunText().orEmpty()
+                val items = shelf.findObjects("musicResponsiveListItemRenderer")
+                    .mapNotNull { trackFromSearchItem(it, cardSubject) }
+                    .distinctBy { it.id }
+                if (items.isNotEmpty()) {
+                    summaries.add(SearchSummaryShelf("Top result", items))
+                    allItems.addAll(items)
+                }
+            }
+            
+            val sectionHeaders = response.findObjects("musicShelfRenderer")
+            for (header in sectionHeaders) {
+                val title = header.findString("title") ?: continue
+                val items = header.findObjects("musicResponsiveListItemRenderer")
+                    .mapNotNull(::trackFromSearchItem)
+                if (items.isNotEmpty()) {
+                    summaries.add(SearchSummaryShelf(title, items))
+                    allItems.addAll(items)
+                }
+            }
+
+            // YouTube Music currently A/B-tests a flat layout where every result is wrapped in
+            // its own itemSectionRenderer. Android's model parser accepts both layouts; collect
+            // responsive rows even when a Top result card already exists.
+            val knownIds = allItems.mapTo(mutableSetOf()) { it.id }
+            val groups = linkedMapOf<String, MutableList<Track>>()
+            response.findObjects("musicResponsiveListItemRenderer").forEach { item ->
+                val track = trackFromSearchItem(item) ?: return@forEach
+                if (!knownIds.add(track.id)) return@forEach
+                val mediaType = item.flexText(1).orEmpty().substringBefore("•").trim()
+                val groupTitle = when {
+                    mediaType.equals("Song", true) -> "Songs"
+                    mediaType.equals("Video", true) -> "Videos"
+                    mediaType.equals("Episode", true) -> "Episodes"
+                    else -> "Other results"
+                }
+                groups.getOrPut(groupTitle) { mutableListOf() }.add(track)
+                allItems.add(track)
+            }
+
+            val groupOrder = listOf("Songs", "Videos", "Episodes", "Other results")
+            groupOrder.forEach { title ->
+                groups[title]?.takeIf { it.isNotEmpty() }?.let { items ->
+                    summaries.add(SearchSummaryShelf(title, items))
+                }
+            }
+
+            // Android's All page is backed by searchSummary, while its filter
+            // tabs issue full Songs/Videos searches with continuations. Merge
+            // the first full filtered pages into All so official audio/video
+            // results are not lost when YouTube returns a short summary shelf.
+            val supplemental = coroutineScope {
+                val songs = async { runCatching { filteredSearchTracks(query, "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D") }.getOrDefault(emptyList()) }
+                val videos = async { runCatching { filteredSearchTracks(query, "EgWKAQIQAWoKEAkQChAFEAMQBA%3D%3D") }.getOrDefault(emptyList()) }
+                val albums = async { runCatching { filteredSearchCatalog(query, "EgWKAQIYAWoKEAkQChAFEAMQBA%3D%3D") }.getOrDefault(emptyList()) }
+                val artists = async { runCatching { filteredSearchCatalog(query, "EgWKAQIgAWoKEAkQChAFEAMQBA%3D%3D") }.getOrDefault(emptyList()) }
+                listOf(songs.await(), videos.await()) to (albums.await() to artists.await())
+            }
+            fun mergeShelf(title: String, extra: List<Track>) {
+                if (extra.isEmpty()) return
+                val shelfIndex = summaries.indexOfFirst { it.title.equals(title, true) }
+                if (shelfIndex >= 0) {
+                    summaries[shelfIndex] = summaries[shelfIndex].copy(
+                        items = (summaries[shelfIndex].items + extra).distinctBy { it.id },
+                    )
+                } else summaries += SearchSummaryShelf(title, extra.distinctBy { it.id })
+                allItems += extra
+            }
+            mergeShelf("Songs", supplemental.first[0])
+            mergeShelf("Videos", supplemental.first[1])
+            val officialSummaries = summaries.map { shelf ->
+                if (shelf.title.equals("Songs", true) || shelf.title.equals("Top result", true)) {
+                    shelf.copy(items = shelf.items.preferOfficial())
+                } else shelf
+            }
+            val mergedAlbums = (catalogItems.filter { it.subtitle.startsWith("Album", true) && it.isAlbumBrowseItem() } + supplemental.second.first)
+                .distinctBy(CatalogItem::browseId).sortedByExactTitle(query)
+            val mergedArtists = (catalogItems.filter { it.subtitle.startsWith("Artist", true) } + supplemental.second.second)
+                .distinctBy(CatalogItem::browseId).sortedByExactTitle(query)
+            
+            return SearchResults(
+                tracks = allItems.distinctBy { it.id }.preferOfficial(),
+                albums = mergedAlbums,
+                artists = mergedArtists,
+                playlists = catalogItems.filter { it.subtitle.contains("Playlist", true) },
+                summaries = officialSummaries,
+                filters = listOf("All") + filterChips
+            ).also { searchCache[cacheKey] = CachedSearch(it, System.currentTimeMillis() + 10 * 60_000L) }
+        } else {
+            val tracks = response.findObjects("musicResponsiveListItemRenderer")
+                .mapNotNull(::trackFromSearchItem)
+                .map { track ->
+                    if (filter.equals("Songs", true) && !track.isOfficial) track.copy(
+                        musicVideoType = "MUSIC_VIDEO_TYPE_ATV",
+                        isOfficial = true,
+                    ) else track
+                }
+                .distinctBy { it.id }
+            val catalogItems = response.catalogItems()
+            return SearchResults(
+                tracks = tracks,
+                albums = catalogItems.filter { it.subtitle.startsWith("Album", true) && it.isAlbumBrowseItem() },
+                artists = catalogItems.filter { it.subtitle.startsWith("Artist", true) && !it.isAlbumBrowseItem() },
+                playlists = catalogItems.filter { it.subtitle.contains("Playlist", true) },
+                filters = listOf("All") + filterChips
+            ).also { searchCache[cacheKey] = CachedSearch(it, System.currentTimeMillis() + 10 * 60_000L) }
+        }
+    }
+
+    private suspend fun filteredSearchTracks(query: String, params: String): List<Track> {
+        val body = buildJsonObject {
+            put("context", clientContext())
+            put("query", query)
+            put("params", params)
+        }.toString()
+        return client.postJson("https://music.youtube.com/youtubei/v1/search?key=$API_KEY", body)
+            .findObjects("musicResponsiveListItemRenderer")
+            .mapNotNull(::trackFromSearchItem)
+            // This response is explicitly the YouTube Music Songs filter—the
+            // same source Android models as SongItem rather than VideoItem.
+            .map { it.copy(musicVideoType = "MUSIC_VIDEO_TYPE_ATV", isOfficial = true) }
+            .distinctBy { it.id }
+            .sortedWith(compareByDescending<Track> { it.isOfficial }.thenBy { it.title.normalizedTitle() != query.normalizedTitle() })
+    }
+
+    private suspend fun filteredSearchCatalog(query: String, params: String): List<CatalogItem> {
+        val body = buildJsonObject {
+            put("context", clientContext())
+            put("query", query)
+            put("params", params)
+        }.toString()
+        val items = client.postJson("https://music.youtube.com/youtubei/v1/search?key=$API_KEY", body)
+            .catalogItems()
+        val typedItems = when (params) {
+            "EgWKAQIYAWoKEAkQChAFEAMQBA%3D%3D" -> items.filter { it.isAlbumBrowseItem() }
+            "EgWKAQIgAWoKEAkQChAFEAMQBA%3D%3D" -> items.filterNot { it.isAlbumBrowseItem() }
+            else -> items
+        }
+        return typedItems
+            .sortedByExactTitle(query)
+    }
+
+    /** Uses the same YouTube Music suggestion endpoint as Android's YouTube.searchSuggestions. */
+    suspend fun searchSuggestions(query: String): List<String> {
+        if (query.isBlank()) return emptyList()
+        val body = buildJsonObject {
+            put("context", clientContext())
+            put("input", query)
+        }.toString()
+        val response = client.postJson(
+            "https://music.youtube.com/youtubei/v1/music/get_search_suggestions?key=$API_KEY",
+            body,
+        )
+        return response.findObjects("searchSuggestionRenderer")
+            .mapNotNull { it["suggestion"]?.allRunText()?.takeIf(String::isNotBlank) }
+            .distinct()
+    }
+
+    suspend fun searchSuggestionItems(query: String): SearchResults {
+        if (query.isBlank()) return SearchResults()
+        val body = buildJsonObject {
+            put("context", clientContext())
+            put("input", query)
+        }.toString()
+        val response = client.postJson("https://music.youtube.com/youtubei/v1/music/get_search_suggestions?key=$API_KEY", body)
+        val catalogItems = response.catalogItems()
+        val extras = coroutineScope {
+            val albums = async { runCatching { filteredSearchCatalog(query, "EgWKAQIYAWoKEAkQChAFEAMQBA%3D%3D") }.getOrDefault(emptyList()) }
+            val artists = async { runCatching { filteredSearchCatalog(query, "EgWKAQIgAWoKEAkQChAFEAMQBA%3D%3D") }.getOrDefault(emptyList()) }
+            albums.await() to artists.await()
+        }
+        return SearchResults(
+            tracks = response.findObjects("musicResponsiveListItemRenderer").mapNotNull(::trackFromSearchItem).distinctBy { it.id },
+            albums = (catalogItems.filter { it.subtitle.startsWith("Album", true) } + extras.first).distinctBy(CatalogItem::browseId).sortedByExactTitle(query),
+            artists = (catalogItems.filter { it.subtitle.startsWith("Artist", true) } + extras.second).distinctBy(CatalogItem::browseId).sortedByExactTitle(query),
+            playlists = catalogItems.filter { it.subtitle.contains("Playlist", true) },
+        )
+    }
+
+    suspend fun catalogPage(browseId: String, kind: String): CatalogPageData {
+        val body = buildJsonObject {
+            put("context", clientContext())
+            put("browseId", browseId)
+        }.toString()
+        val response = client.postJson("https://music.youtube.com/youtubei/v1/browse?key=$API_KEY", body)
+        val trackRoot = if (kind.equals("Album", true) || kind.equals("Playlist", true)) {
+            response.findObjects("musicPlaylistShelfRenderer").firstOrNull() ?: response
+        } else {
+            response.findObjects("musicShelfRenderer").firstOrNull { it.findObjects("musicResponsiveListItemRenderer").isNotEmpty() } ?: response
+        }
+        val firstTracks = trackRoot.findObjects("musicResponsiveListItemRenderer")
+            .mapNotNull(::trackFromSearchItem)
+        var continuation = trackRoot.findObjects("nextContinuationData").firstNotNullOfOrNull { it.findString("continuation") }
+            ?: trackRoot.findObjects("continuationEndpoint").firstNotNullOfOrNull { it.findString("continuation") }
+        val continuedTracks = mutableListOf<Track>()
+        var continuationPages = 0
+        while (continuation != null && continuationPages < 5) {
+            val token = continuation
+            val continuedResponse = runCatching {
+                client.postJson(
+                    "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+                    browseBody(continuation = token),
+                )
+            }.getOrNull() ?: break
+            continuedTracks += continuedResponse.findObjects("musicResponsiveListItemRenderer").mapNotNull(::trackFromSearchItem)
+            continuation = continuedResponse.findObjects("nextContinuationData").firstNotNullOfOrNull { it.findString("continuation") }
+                ?: continuedResponse.findObjects("continuationEndpoint").firstNotNullOfOrNull { it.findString("continuation") }
+            continuationPages++
+        }
+        val tracks = (firstTracks + continuedTracks).distinctBy { it.id }.preferOfficial()
+        val catalogs = response.catalogItems()
+        val title = response.findObjects("musicImmersiveHeaderRenderer").firstOrNull()?.findString("title")
+            ?: response.findObjects("musicDetailHeaderRenderer").firstOrNull()?.findString("title")
+            ?: response.findString("title")
+            ?: "Unknown ${kind.lowercase()}"
+        val header = response.findObjects("musicImmersiveHeaderRenderer").firstOrNull()
+            ?: response.findObjects("musicDetailHeaderRenderer").firstOrNull()
+        val pageArtwork = header?.bestArtworkUrl() ?: response.bestArtworkUrl()
+        val pageArtist = header?.get("subtitle")?.allRunText().orEmpty().substringBefore("•").trim()
+        val hydratedTracks = tracks.map { track ->
+            track.copy(
+                artist = track.artist.takeUnless { it == "YouTube Music" }.orEmpty().ifBlank { pageArtist.ifBlank { "YouTube Music" } },
+                album = track.album.ifBlank { if (kind.equals("Album", true)) title else "" },
+                artworkUrl = track.artworkUrl?.takeUnless {
+                    it.isBlank() || it.contains("avatar_single_500")
+                }.orEmpty().ifBlank { pageArtwork.orEmpty() },
+            )
+        }
+        return CatalogPageData(
+            title = title,
+            subtitle = header?.findString("subtitle").orEmpty(),
+            description = header?.findString("description").orEmpty(),
+            artworkUrl = pageArtwork,
+            tracks = hydratedTracks,
+            albums = catalogs.filter { it.subtitle.startsWith("Album", true) || it.subtitle.startsWith("Single", true) },
+        )
+    }
+
+    suspend fun searchCategory(category: String): HomeFeed = coroutineScope {
+        val response = client.postJson(
+            "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+            """{"context":{"client":{"clientName":"WEB_REMIX","clientVersion":"$CLIENT_VERSION","hl":"en","gl":"US"}},"browseId":"FEmusic_home"}""",
+        )
+        HomeFeed(shelves = response.homeShelves())
+    }
+
+    suspend fun validateGoogleSession(): Boolean {
+        if (WindowsPreferences.googleSession() == null) return false
+        val response = runCatching {
+            client.postJson(
+                "https://music.youtube.com/youtubei/v1/account/account_menu?key=$API_KEY",
+                buildJsonObject { put("context", clientContext()) }.toString(),
+            )
+        }.getOrNull() ?: return false
+        return response.findObjects("accountItemSectionRenderer").isNotEmpty() ||
+            response.findObjects("activeAccountHeaderRenderer").isNotEmpty() ||
+            response.findStrings("email").any { it.contains('@') }
+    }
+
+    suspend fun googleAccountProfile(): GoogleAccountProfile? {
+        if (WindowsPreferences.googleSession() == null) return null
+        val response = runCatching {
+            client.postJson(
+                "https://music.youtube.com/youtubei/v1/account/account_menu?key=$API_KEY",
+                buildJsonObject { put("context", clientContext()) }.toString(),
+            )
+        }.getOrNull() ?: return null
+        val header = response.findObjects("activeAccountHeaderRenderer").firstOrNull() ?: return null
+        val name = header["accountName"]?.allRunText().orEmpty()
+            .ifBlank { header.findString("name").orEmpty() }
+        if (name.isBlank()) return null
+        val email = header["email"]?.allRunText().orEmpty()
+            .ifBlank { header.findStrings("email").firstOrNull { it.contains('@') }.orEmpty() }
+            .takeIf(String::isNotBlank)
+        val channelHandle = header["channelHandle"]?.allRunText().orEmpty()
+            .ifBlank { header.findString("channelHandle").orEmpty() }
+            .trim()
+            .takeIf(String::isNotBlank)
+        val photo = (header["accountPhoto"] as? JsonObject)?.bestArtworkUrl() ?: header.bestArtworkUrl()
+        return GoogleAccountProfile(name, photo, email, channelHandle).also {
+            WindowsPreferences.saveGoogleAccountProfile(it.name, it.photoUrl, it.email, it.channelHandle)
+        }
+    }
+
+    /** Uses the same account browse ids as Android's SyncUtils/AccountViewModel. */
+    suspend fun googleLibrary(): GoogleLibrarySnapshot = coroutineScope {
+        check(WindowsPreferences.googleSession() != null) { "Google account is not connected" }
+        val likedSongs = async {
+            runCatching { catalogPage("LM", "Playlist").tracks }.getOrDefault(emptyList())
+        }
+        val librarySongs = async {
+            runCatching { browseLibraryTracks("FEmusic_liked_videos") }.getOrDefault(emptyList())
+        }
+        val playlists = async {
+            runCatching {
+                val response = client.postJson(
+                    "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+                    browseBody(browseId = "FEmusic_liked_playlists"),
+                )
+                response.catalogItems()
+                    .filter { it.subtitle.contains("Playlist", true) }
+                    .distinctBy { it.browseId }
+                    .map { item -> WindowsPlaylist(item.title, browseId = item.browseId) }
+            }.getOrDefault(emptyList())
+        }
+        GoogleLibrarySnapshot(
+            liked = (likedSongs.await() + librarySongs.await()).distinctBy { it.id },
+            playlists = playlists.await(),
+        )
+    }
+
+    private suspend fun browseLibraryTracks(browseId: String): List<Track> {
+        var response = client.postJson(
+            "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+            browseBody(browseId = browseId),
+        )
+        val tracks = mutableListOf<Track>()
+        var pages = 0
+        while (true) {
+            tracks += response.findObjects("musicResponsiveListItemRenderer")
+                .mapNotNull(::trackFromSearchItem)
+            val continuation = response.findObjects("nextContinuationData")
+                .firstNotNullOfOrNull { it.findString("continuation") }
+                ?: response.findObjects("continuationEndpoint")
+                    .firstNotNullOfOrNull { it.findString("continuation") }
+                ?: break
+            if (++pages >= 8) break
+            response = client.postJson(
+                "https://music.youtube.com/youtubei/v1/browse?key=$API_KEY",
+                browseBody(continuation = continuation),
+            )
+        }
+        return tracks.distinctBy { it.id }.preferOfficial()
+    }
+
+    suspend fun nextRadioQueue(videoId: String, retryWithOfficialSeed: Boolean = true): List<Track> {
+        suspend fun verifyCandidates(candidates: List<Track>): List<Track> = coroutineScope {
+            candidates.filterNot { it.id == videoId }.distinctBy { it.id }.take(24)
+                .map { candidate -> async { resolveOfficialTrack(candidate) } }
+                .mapNotNull { it.await() }
+                .filterNot { it.id == videoId }
+                .distinctBy { it.id }
+        }
+        var response = runCatching {
+            client.postJson(
+                "https://music.youtube.com/youtubei/v1/next?key=$API_KEY",
+                """{"context":{"client":{"clientName":"WEB_REMIX","clientVersion":"$CLIENT_VERSION","hl":"en","gl":"US"}},"videoId":"$videoId","enablePersistentPlaylistPanel":true}""",
+            )
+        }.getOrNull()
+        if (response == null) {
+            val verified = verifyCandidates(runCatching { WindowsNewPipeExtractor.relatedTracks(videoId) }.getOrDefault(emptyList()))
+            if (verified.isNotEmpty()) return verified
+            if (retryWithOfficialSeed) {
+                val officialSeed = resolveOfficialSeed(videoId)
+                if (officialSeed != null && officialSeed.id != videoId) return nextRadioQueue(officialSeed.id, false)
+            }
+            return emptyList()
+        }
+
+        var firstItems = response.findObjects("playlistPanelVideoRenderer")
+            .mapNotNull(::trackFromPlaylistPanelItem)
+            .filterNot { it.id == videoId }
+        // A fresh YouTube Music `next` request commonly returns only the seed
+        // row and an automixPreviewVideoRenderer. Android's YouTubeQueue follows
+        // that RDAMVM endpoint; without doing so desktop appeared to have an
+        // empty queue until another network request happened at track end.
+        if (firstItems.isEmpty()) {
+            val automix = response.findObjects("watchPlaylistEndpoint")
+                .firstOrNull { endpoint -> endpoint.findString("playlistId")?.startsWith("RDAMVM") == true }
+            val playlistId = automix?.findString("playlistId")
+            if (playlistId != null) {
+                val automixResponse = runCatching {
+                    client.postJson(
+                        "https://music.youtube.com/youtubei/v1/next?key=$API_KEY",
+                        buildJsonObject {
+                            put("context", clientContext())
+                            put("videoId", videoId)
+                            put("playlistId", playlistId)
+                            automix.findString("params")?.let { put("params", it) }
+                            put("enablePersistentPlaylistPanel", true)
+                        }.toString(),
+                    )
+                }.getOrNull()
+                if (automixResponse != null) {
+                    response = automixResponse
+                    firstItems = response.findObjects("playlistPanelVideoRenderer")
+                        .mapNotNull(::trackFromPlaylistPanelItem)
+                        .filterNot { it.id == videoId }
+                }
+            }
+        }
+        var continuation = response.findObjects("nextContinuationData").firstNotNullOfOrNull { it.findString("continuation") }
+            ?: response.findObjects("continuationEndpoint").firstNotNullOfOrNull { it.findString("continuation") }
+        val continuedItems = mutableListOf<Track>()
+        var continuationPages = 0
+        // Android's YouTubeQueue keeps consuming continuation pages before the
+        // visible list runs dry. Preload a comparable working set here so Next
+        // never has to wait for the final row to finish before fetching again.
+        while (continuation != null && continuationPages < 5 && firstItems.size + continuedItems.size < 60) {
+            val token = continuation
+            val continuedResponse = runCatching {
+                client.postJson(
+                    "https://music.youtube.com/youtubei/v1/next?key=$API_KEY",
+                    buildJsonObject {
+                        put("context", clientContext())
+                        put("continuation", token)
+                    }.toString(),
+                )
+            }.getOrNull() ?: break
+            continuedItems += continuedResponse.findObjects("playlistPanelVideoRenderer")
+                .mapNotNull(::trackFromPlaylistPanelItem)
+            continuation = continuedResponse.findObjects("nextContinuationData")
+                .firstNotNullOfOrNull { it.findString("continuation") }
+                ?: continuedResponse.findObjects("continuationEndpoint")
+                    .firstNotNullOfOrNull { it.findString("continuation") }
+            continuationPages++
+        }
+
+        // ATV is YouTube Music's official audio track type. OMV and rows with
+        // no music type are deliberately excluded from autoplay.
+        var rawItems = (firstItems + continuedItems)
+            .filter { it.id != videoId }
+            .distinctBy { it.id }
+        if (rawItems.isEmpty()) {
+            rawItems = runCatching { WindowsNewPipeExtractor.relatedTracks(videoId) }.getOrDefault(emptyList())
+        }
+        val officialItems = rawItems
+            .filter { it.isOfficial && it.id != videoId }
+            .distinctBy { it.id }
+        if (officialItems.isNotEmpty()) return officialItems
+
+        // Some `next` response variants omit musicVideoType from every panel
+        // row. Resolve those rows through the Songs tab, but never return the
+        // original unverified video row.
+        val verified = verifyCandidates(rawItems)
+        if (verified.isNotEmpty()) return verified
+        if (retryWithOfficialSeed) {
+            val officialSeed = resolveOfficialSeed(videoId)
+            if (officialSeed != null && officialSeed.id != videoId) return nextRadioQueue(officialSeed.id, false)
+        }
+        return emptyList()
+    }
+
+    private suspend fun resolveOfficialSeed(videoId: String): Track? {
+        val metadata = runCatching {
+            client.get("https://www.youtube.com/oembed") {
+                parameter("url", "https://www.youtube.com/watch?v=$videoId")
+                parameter("format", "json")
+            }.body<JsonObject>()
+        }.getOrNull() ?: return null
+        val title = metadata["title"]?.jsonPrimitive?.contentOrNull ?: return null
+        val artist = metadata["author_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        return resolveOfficialTrack(Track(videoId, title, artist))
+    }
+
+    suspend fun resolveOfficialTrack(track: Track): Track? {
+        if (track.isOfficial) return track
+        val candidates = runCatching {
+            filteredSearchTracks("${track.title} ${track.artist}", "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D")
+        }.getOrDefault(emptyList()).filter(Track::isOfficial)
+        val normalizedTitle = track.title.normalizedTitle()
+        val normalizedArtist = track.artist.normalizedTitle()
+        return candidates.maxByOrNull { candidate ->
+            var score = 0
+            if (candidate.title.normalizedTitle() == normalizedTitle) score += 100
+            else if (candidate.title.normalizedTitle().contains(normalizedTitle)) score += 35
+            if (candidate.artist.normalizedTitle().contains(normalizedArtist) ||
+                normalizedArtist.contains(candidate.artist.normalizedTitle())) score += 70
+            if (track.durationMs > 0 && kotlin.math.abs(track.durationMs - candidate.durationMs) <= 5_000L) score += 35
+            score
+        }
+    }
+
+    /** Resolves a playable progressive/adaptive audio URL through the InnerTube player endpoint. */
+    suspend fun streamUrl(track: Track): String? = withContext(Dispatchers.IO) {
+        streamUrlInternal(track)
+    }
+
+    private suspend fun streamUrlInternal(track: Track): String? {
+        track.localPath?.let { path ->
+            return File(path).takeIf { it.isFile }?.toURI()?.toASCIIString()
+        }
+        WindowsAudioCache.playableLocalFile(track.id)?.let { return it.toURI().toString() }
+        val now = System.currentTimeMillis()
+        val cached = streamCache[track.id]?.takeIf { it.validUntilMs > now }
+
+        // Fast path: cached URL was verified when it was first resolved. Skip
+        // all network probe work and go straight to the proxy/prefetch step.
+        // CDN signed URLs stay valid well beyond the 10-minute cache TTL so
+        // re-probing on every play is redundant and adds 200–800 ms of latency.
+        if (cached != null) {
+            val prefetchCached = WindowsAudioCache.getOrPrefetch(track.id, cached.url)
+            if (prefetchCached.isComplete && prefetchCached.errorMsg == null && prefetchCached.file.length() > 0L) {
+                return prefetchCached.file.toURI().toString()
+            }
+            return WindowsAudioProxy.register(cached.url, cached.userAgent)
+        }
+
+        val resolved = coroutineScope {
+            val winner = CompletableDeferred<CachedStream?>()
+            
+            // 1. Race all InnerTube clients
+            val innerTubeJobs = PLAYBACK_CLIENTS.map { playbackClient ->
+                async {
+                    val candidate = fetchInnerTubeUrl(track.id, playbackClient)?.let { url ->
+                        val playable = withContext(Dispatchers.IO) {
+                            WindowsAudioProxy.canStartStream(url, playbackClient.userAgent)
+                        }
+                        if (playable) CachedStream(url, playbackClient.userAgent, now + 10 * 60_000L) else null
+                    }
+                    if (candidate != null) winner.complete(candidate)
+                }
+            }
+            
+            // 2. Race NewPipe in parallel (fast Java fallback)
+            val newPipeJob = async {
+                val candidate = withContext(Dispatchers.IO) {
+                    WindowsNewPipeExtractor.audioStream(track.id)?.let { url ->
+                        if (WindowsAudioProxy.canStream(url, DEFAULT_STREAM_USER_AGENT)) {
+                            CachedStream(url, DEFAULT_STREAM_USER_AGENT, now + 10 * 60_000L)
+                        } else null
+                    }
+                }
+                if (candidate != null) winner.complete(candidate)
+            }
+            
+            // 3. Fallback to yt-dlp (slow subprocess) only if others fail or are very slow
+            val ytDlpJob = async {
+                delay(1500)
+                if (winner.isCompleted) return@async
+                val candidate = withContext(Dispatchers.IO) {
+                    WindowsYtDlpExtractor.audioStream(track.id)?.let { url ->
+                        if (WindowsAudioProxy.canStream(url, DEFAULT_STREAM_USER_AGENT)) {
+                            CachedStream(url, DEFAULT_STREAM_USER_AGENT, now + 10 * 60_000L)
+                        } else null
+                    }
+                }
+                if (candidate != null) winner.complete(candidate)
+            }
+            
+            val allJobs = async {
+                innerTubeJobs.forEach { it.join() }
+                newPipeJob.join()
+                ytDlpJob.join()
+                winner.complete(null)
+            }
+            
+            val result = winner.await()
+            allJobs.cancel()
+            innerTubeJobs.forEach { if (!it.isCompleted) it.cancel() }
+            if (!newPipeJob.isCompleted) newPipeJob.cancel()
+            if (!ytDlpJob.isCompleted) ytDlpJob.cancel()
+            
+            result
+        }
+        if (resolved != null) {
+            streamCache[track.id] = resolved
+            val prefetch = WindowsAudioCache.getOrPrefetch(track.id, resolved.url)
+            if (prefetch.isComplete && prefetch.errorMsg == null && prefetch.file.length() > 0L) {
+                return prefetch.file.toURI().toString()
+            }
+            return WindowsAudioProxy.register(resolved.url, resolved.userAgent)
+        }
+        
+        return null
+    }
+
+    suspend fun downloadOffline(track: Track) {
+        val playbackUrl = streamUrl(track) ?: error("Audio resmi belum tersedia")
+        val remoteUrl = WindowsAudioProxy.getRemoteUrl(playbackUrl)
+        if (remoteUrl.startsWith("http", true)) WindowsAudioCache.downloadOffline(track.id, remoteUrl)
+        else WindowsAudioCache.promoteCachedToOffline(track.id)
+        WindowsLyricsProviderRegistry.getLyricsResult(track)
+        WindowsOfflineArtworkCache.download(track)
+    }
+
+    private val httpClient = okhttp3.OkHttpClient.Builder()
+        .connectTimeout(6, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .connectionPool(okhttp3.ConnectionPool(8, 3, java.util.concurrent.TimeUnit.MINUTES))
+        .build()
+
+    private suspend fun fetchInnerTubeUrl(videoId: String, playbackClient: PlaybackClient): String? = runCatching {
+        val extras = playbackClient.contextExtras.takeIf { it.isNotBlank() }?.let { ",$it" }.orEmpty()
+        val bodyStr = """{"context":{"client":{"clientName":"${playbackClient.name}","clientVersion":"${playbackClient.version}","hl":"en","gl":"US"$extras}},"videoId":"$videoId","contentCheckOk":true,"racyCheckOk":true}"""
+        
+        val request = okhttp3.Request.Builder()
+            .url("https://music.youtube.com/youtubei/v1/player?prettyPrint=false")
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", playbackClient.userAgent)
+            .header("X-Goog-Api-Format-Version", "1")
+            .header("X-YouTube-Client-Name", playbackClient.id)
+            .header("X-YouTube-Client-Version", playbackClient.version)
+            .header("X-Origin", "https://music.youtube.com")
+            .header("Origin", "https://music.youtube.com")
+            .header("Referer", "https://music.youtube.com/")
+            .post(bodyStr.toRequestBody("application/json".toMediaType()))
+            .build()
+            
+        val responseStr = withContext(Dispatchers.IO) {
+            httpClient.newCall(request).execute().use { it.body?.string() }
+        } ?: return@runCatching null
+        
+        val response = Json.parseToJsonElement(responseStr).jsonObject
+        val resolvedUrl = response.findArrays("adaptiveFormats").asSequence()
+            .flatMap { it.asSequence() }
+            .filterIsInstance<JsonObject>()
+            .filter { it["mimeType"]?.jsonPrimitive?.contentOrNull?.startsWith("audio/") == true }
+            .sortedWith(
+                compareByDescending<JsonObject> {
+                    it["mimeType"]?.jsonPrimitive?.contentOrNull?.startsWith("audio/webm") == true
+                }.thenByDescending {
+                    it["bitrate"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                },
+            )
+            .mapNotNull { it["url"]?.jsonPrimitive?.contentOrNull }
+            .firstOrNull()
+        resolvedUrl
+    }.getOrNull()
+
+    override suspend fun lyrics(track: Track): List<LyricLine> {
+        val results: JsonArray = client.get("https://lrclib.net/api/search") {
+            parameter("track_name", track.title)
+            parameter("artist_name", track.artist)
+            if (track.album.isNotBlank()) parameter("album_name", track.album)
+        }.body()
+
+        val item = results.firstOrNull()?.jsonObject ?: return emptyList()
+        val synced = item["syncedLyrics"]?.jsonPrimitive?.contentOrNull
+        if (!synced.isNullAsText() && synced != null) {
+            return parseLrc(synced)
+        }
+
+        val plain = item["plainLyrics"]?.jsonPrimitive?.contentOrNull
+        if (!plain.isNullAsText() && plain != null) {
+            return plain.lineSequence()
+                .filter { it.isNotBlank() }
+                .map { LyricLine(0L, it.trim()) }
+                .toList()
+        }
+        return emptyList()
+    }
+
+    override fun close() {
+        client.close()
+    }
+
+    private fun trackFromSearchItem(item: JsonObject, fallbackArtist: String = ""): Track? {
+        val videoId = item.findString("videoId") ?: return null
+        val title = item.flexText(0) ?: item.findString("text") ?: "Unknown Title"
+        val subtitle = item.flexText(1).orEmpty()
+        val subtitleParts = subtitle.split("•").map(String::trim).filter(String::isNotBlank)
+        val mediaType = subtitleParts.firstOrNull()?.lowercase()
+        val metadata = subtitleParts.drop(1)
+        val artist = when (mediaType) {
+            "episode" -> metadata.lastOrNull()
+            "song", "video" -> metadata.firstOrNull { !it.looksLikeDurationOrStats() }
+            else -> subtitleParts.firstOrNull()
+        }.orEmpty().ifBlank { fallbackArtist }.ifBlank { "YouTube Music" }
+        val album = if (mediaType in setOf("song", "video")) {
+            metadata.dropWhile { it != artist }.drop(1).firstOrNull { !it.looksLikeDurationOrStats() }.orEmpty()
+        } else ""
+        val duration = subtitleParts.lastOrNull { it.matches(Regex("\\d{1,2}:\\d{2}(?::\\d{2})?")) }
+            ?.toDurationMs()
+            ?.takeIf { it > 0L }
+            ?: 180_000L
+        // InnerTube lists several thumbnail renditions. Picking the first URL
+        // commonly locks Windows to a 60px cache entry after changing tracks.
+        val artwork = item.bestArtworkUrl() ?: "https://music.youtube.com/img/avatar_single_500.png"
+        val musicVideoType = item.findString("musicVideoType")
+        val official = musicVideoType == "MUSIC_VIDEO_TYPE_ATV"
+        val explicit = item.toString().contains("MUSIC_EXPLICIT_BADGE")
+        return Track(
+            id = videoId,
+            title = title,
+            artist = artist,
+            album = album,
+            artworkUrl = artwork,
+            durationMs = duration,
+            explicit = explicit,
+            musicVideoType = musicVideoType,
+            isOfficial = official,
+        )
+    }
+
+    private fun Track.toHomeItem() = HomeItem(
+        title = title,
+        subtitle = listOf(artist, album).filter(String::isNotBlank).joinToString(" • "),
+        artworkUrl = artworkUrl,
+        track = this,
+    )
+
+    private fun trackFromPlaylistPanelItem(item: JsonObject): Track? {
+        val videoId = item.findString("videoId") ?: return null
+        val title = item["title"]?.allRunText()?.takeIf(String::isNotBlank)
+            ?: item.findString("text")
+            ?: "Unknown Title"
+        val byline = item["shortBylineText"]?.allRunText().orEmpty()
+            .ifBlank { item["longBylineText"]?.allRunText().orEmpty() }
+            .ifBlank { item["subtitle"]?.allRunText().orEmpty() }
+        val artist = byline.substringBefore("•").trim()
+            .ifBlank { item.findString("artist").orEmpty() }
+            .ifBlank { item.findString("byline").orEmpty() }
+            .ifBlank { "YouTube Music" }
+        val artwork = item.bestArtworkUrl() ?: "https://music.youtube.com/img/avatar_single_500.png"
+        val durationText = item.findString("lengthText") ?: ""
+        return Track(
+            id = videoId,
+            title = title,
+            artist = artist,
+            artworkUrl = artwork,
+            durationMs = durationText.toDurationMs(),
+            musicVideoType = item.findString("musicVideoType"),
+            isOfficial = item.findString("musicVideoType") == "MUSIC_VIDEO_TYPE_ATV",
+        )
+    }
+
+    private fun JsonObject.homeShelves(): List<HomeShelf> =
+        findObjects("musicCarouselShelfRenderer").mapNotNull { shelf ->
+            val title = shelf.findString("text") ?: shelf.findString("title") ?: "Recommended"
+            val cardItems = shelf.findObjects("musicTwoRowItemRenderer").mapNotNull(::homeItemFromTwoRow)
+            val listItems = shelf.findObjects("musicResponsiveListItemRenderer").mapNotNull(::homeItemFromResponsive)
+            val items = (cardItems + listItems).distinctBy { it.track?.id ?: "${it.title}|${it.subtitle}" }
+            HomeShelf(title, items, if (listItems.size > cardItems.size) HomeShelfLayout.List else HomeShelfLayout.Cards)
+                .takeIf { items.isNotEmpty() }
+        }
+
+    private fun JsonObject.toHomeFeed(): HomeFeed = HomeFeed(
+        shelves = homeShelves(),
+        continuation = homeContinuationToken(),
+        chips = findObjects("chipCloudChipRenderer").mapNotNull { chip ->
+            val title = chip.findString("text") ?: return@mapNotNull null
+            val params = chip.findString("params") ?: return@mapNotNull null
+            HomeChip(title, params)
+        }.distinctBy { it.params },
+    )
+
+    private fun JsonObject.homeContinuationToken(): String? {
+        val section = findObjects("sectionListRenderer").firstOrNull()
+            ?: findObjects("sectionListContinuation").firstOrNull()
+            ?: return null
+        return section["continuations"]
+            ?.findObjects("nextContinuationData")
+            ?.firstNotNullOfOrNull { it.findString("continuation") }
+    }
+
+    private fun homeItemFromTwoRow(item: JsonObject): HomeItem? {
+        val title = item["title"]?.findString("text") ?: item.flexText(0) ?: return null
+        val subtitle = item["subtitle"]?.allRunText().orEmpty().ifBlank { item.flexText(1).orEmpty() }
+        val artworkUrl = item.bestArtworkUrl() ?: "https://music.youtube.com/img/avatar_single_500.png"
+        val track = trackFromTwoRow(item)
+        return HomeItem(
+            title = title,
+            subtitle = subtitle,
+            artworkUrl = artworkUrl,
+            track = track,
+        )
+    }
+
+    private fun homeItemFromResponsive(item: JsonObject): HomeItem? {
+        val track = trackFromSearchItem(item) ?: return null
+        val subtitle = item.flexText(1).orEmpty()
+        return HomeItem(track.title, subtitle.ifBlank { track.artist }, track.artworkUrl, track)
+    }
+
+    private fun trackFromTwoRow(item: JsonObject): Track? {
+        val videoId = item.findString("videoId") ?: return null
+        val title = item["title"]?.findString("text") ?: item.flexText(0) ?: return null
+        val subtitle = item["subtitle"]?.allRunText().orEmpty().ifBlank { item.flexText(1).orEmpty() }
+        val artist = subtitle.substringBefore("•").trim().ifBlank { "YouTube Music" }
+        val artworkUrl = item.bestArtworkUrl() ?: "https://music.youtube.com/img/avatar_single_500.png"
+        val explicit = item.toString().contains("MUSIC_EXPLICIT_BADGE")
+        return Track(id = videoId, title = title, artist = artist, artworkUrl = artworkUrl, durationMs = 180_000L, explicit = explicit)
+    }
+
+    private fun JsonObject.flexText(index: Int): String? =
+        findObjects("flexColumns").getOrNull(index)?.allRunText()?.takeIf(String::isNotBlank)
+
+    private fun JsonObject.flexTexts(): List<String> =
+        findObjects("flexColumns").mapNotNull { it.allRunText().takeIf(String::isNotBlank) }
+
+    private fun JsonElement.allRunText(): String =
+        findStrings("text").joinToString("").trim()
+
+    private fun parseLrc(raw: String): List<LyricLine> = raw.lineSequence().mapNotNull { line ->
+        val timestamp = line.substringAfter('[', "").substringBefore(']', "")
+        val text = line.substringAfter(']', "").trim()
+        if (timestamp.isBlank() || text.isBlank()) return@mapNotNull null
+        val minutes = timestamp.substringBefore(':').toLongOrNull() ?: 0L
+        val seconds = timestamp.substringAfter(':').toDoubleOrNull() ?: 0.0
+        LyricLine((minutes * 60_000 + (seconds * 1000)).toLong(), text)
+    }.toList()
+
+    private fun String.toDurationMs(): Long {
+        val parts = split(':').mapNotNull { it.toLongOrNull() }
+        return when (parts.size) {
+            2 -> (parts[0] * 60 + parts[1]) * 1000L
+            3 -> (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000L
+            else -> 180_000L
+        }
+    }
+
+    private fun String.looksLikeDurationOrStats(): Boolean =
+        matches(Regex("\\d{1,2}:\\d{2}(:\\d{2})?")) ||
+            contains("play", ignoreCase = true) ||
+            contains("view", ignoreCase = true) ||
+            contains("subscriber", ignoreCase = true) ||
+            matches(Regex("(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec).*"))
+
+    private fun String.normalizedTitle(): String = lowercase()
+        .replace(Regex("[^a-z0-9]+"), " ")
+        .trim()
+
+    private fun List<CatalogItem>.sortedByExactTitle(query: String): List<CatalogItem> =
+        sortedWith(compareBy<CatalogItem> { it.title.normalizedTitle() != query.normalizedTitle() }
+            .thenBy { !it.title.contains(query, ignoreCase = true) })
+
+    private fun List<Track>.preferOfficial(): List<Track> {
+        val official = filter(Track::isOfficial)
+        return if (official.isNotEmpty()) official else this
+    }
+
+    private fun JsonElement.findString(key: String): String? = when (this) {
+        is JsonObject -> entries.firstNotNullOfOrNull { (k, v) ->
+            if (k == key && v is JsonPrimitive && v.contentOrNull?.isNotBlank() == true) v.content
+            else v.findString(key)
+        }
+        is JsonArray -> firstNotNullOfOrNull { it.findString(key) }
+        else -> null
+    }
+
+    private fun JsonElement.findObjects(key: String): List<JsonObject> = when (this) {
+        is JsonObject -> entries.flatMap { (k, v) ->
+            if (k == key && v is JsonObject) listOf(v)
+            else if (k == key && v is JsonArray) v.filterIsInstance<JsonObject>()
+            else v.findObjects(key)
+        }
+        is JsonArray -> flatMap { it.findObjects(key) }
+        else -> emptyList()
+    }
+
+    private fun JsonObject.bestArtworkUrl(): String? =
+        findObjects("thumbnails")
+            .mapNotNull { thumbnail ->
+                val url = thumbnail["url"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val width = thumbnail["width"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                val height = thumbnail["height"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                Triple(url, width, height)
+            }
+            .maxByOrNull { (_, width, height) -> width * height }
+            ?.first
+
+    private fun JsonObject.catalogItems(): List<CatalogItem> =
+        (findObjects("musicResponsiveListItemRenderer") + findObjects("musicTwoRowItemRenderer"))
+            .mapNotNull { item ->
+                if (item.findString("videoId") != null) return@mapNotNull null
+                // A result row may contain artist, album and menu browse IDs.
+                // Android uses the endpoint attached to the title column.
+                val browseId = item["navigationEndpoint"]?.findString("browseId")
+                    ?: item["title"]?.findString("browseId")
+                    ?: item.findObjects("flexColumns").firstOrNull()?.findString("browseId")
+                    ?: item.findString("browseId")
+                    ?: return@mapNotNull null
+                val title = item.flexText(0)
+                    ?: item["title"]?.findString("text")
+                    ?: item.findString("text")
+                    ?: return@mapNotNull null
+                val subtitle = item.flexText(1)
+                    ?: item["subtitle"]?.allRunText().orEmpty()
+                CatalogItem(browseId, title, subtitle, item.bestArtworkUrl())
+            }
+            .filter { item ->
+                item.subtitle.startsWith("Artist", true) || item.subtitle.startsWith("Album", true) ||
+                    item.subtitle.startsWith("Single", true) || item.subtitle.contains("Playlist", true)
+            }
+            .distinctBy(CatalogItem::browseId)
+
+    private fun CatalogItem.isAlbumBrowseItem(): Boolean =
+        browseId.startsWith("MPRE", ignoreCase = true) ||
+            browseId.startsWith("OLAK5uy_", ignoreCase = true)
+
+    private fun JsonElement.findStrings(key: String): List<String> = when (this) {
+        is JsonObject -> entries.flatMap { (k, v) ->
+            if (k == key && v is JsonPrimitive && v.contentOrNull != null) listOf(v.content)
+            else v.findStrings(key)
+        }
+        is JsonArray -> flatMap { it.findStrings(key) }
+        else -> emptyList()
+    }
+
+    private fun JsonElement.findArrays(key: String): List<JsonArray> = when (this) {
+        is JsonObject -> entries.flatMap { (k, v) ->
+            if (k == key && v is JsonArray) listOf(v)
+            else v.findArrays(key)
+        }
+        is JsonArray -> flatMap { it.findArrays(key) }
+        else -> emptyList()
+    }
+
+    private suspend fun HttpClient.postJson(url: String, body: String): JsonObject {
+        var lastFailure: Throwable? = null
+        repeat(2) { attempt ->
+            try {
+                return post(url) {
+                    contentType(ContentType.Application.Json)
+                    header("Accept", "application/json")
+                    header("Accept-Language", "en-US,en;q=0.9")
+                    header("Cache-Control", "no-cache")
+                    header("Origin", "https://music.youtube.com")
+                    header("X-Origin", "https://music.youtube.com")
+                    header("Referer", "https://music.youtube.com/")
+                    header("User-Agent", DEFAULT_STREAM_USER_AGENT)
+                    header("X-Goog-Api-Format-Version", "1")
+                    header("X-YouTube-Client-Name", "67")
+                    header("X-YouTube-Client-Version", CLIENT_VERSION)
+                    WindowsPreferences.googleSession()?.let { session ->
+                        header("Cookie", session.cookie)
+                        header("Authorization", session.sapisidHash())
+                        header("X-Goog-AuthUser", "0")
+                        if (session.visitorData.isNotBlank()) header("X-Goog-Visitor-Id", session.visitorData)
+                        if (session.dataSyncId.isNotBlank()) header("X-Goog-PageId", session.dataSyncId)
+                    }
+                    setBody(body)
+                }.body()
+            } catch (error: Throwable) {
+                lastFailure = error
+                if (attempt == 0) delay(220L)
+            }
+        }
+        throw lastFailure ?: IllegalStateException("YouTube Music request failed")
+    }
+
+    private fun clientContext(): JsonObject = buildJsonObject {
+        put("client", buildJsonObject {
+            put("clientName", "WEB_REMIX")
+            put("clientVersion", CLIENT_VERSION)
+            put("hl", "en")
+            put("gl", "US")
+            WindowsPreferences.googleSession()?.visitorData?.takeIf(String::isNotBlank)?.let { put("visitorData", it) }
+        })
+    }
+
+    private fun WindowsPreferences.GoogleSession.sapisidHash(): String {
+        val sapisid = cookie.split(';').map(String::trim)
+            .firstOrNull { it.startsWith("SAPISID=") }
+            ?.substringAfter('=')
+            .orEmpty()
+        val timestamp = System.currentTimeMillis() / 1000
+        val digest = MessageDigest.getInstance("SHA-1")
+            .digest("$timestamp $sapisid https://music.youtube.com".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        return "SAPISIDHASH ${timestamp}_$digest"
+    }
+
+    private fun browseBody(browseId: String? = null, continuation: String? = null, params: String? = null): String =
+        buildJsonObject {
+            put("context", clientContext())
+            browseId?.let { put("browseId", it) }
+            continuation?.let { put("continuation", it) }
+            params?.let { put("params", it) }
+        }.toString()
+
+    private fun String?.isNullAsText() = this == null || this.equals("null", ignoreCase = true) || isBlank()
+
+    companion object {
+        private const val API_KEY = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX3"
+        private const val CLIENT_VERSION = "1.20260806.01.00"
+        private const val DEFAULT_STREAM_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
+        private val PLAYBACK_CLIENTS = listOf(
+            PlaybackClient(
+                name = "VISIONOS",
+                version = "0.1",
+                id = "101",
+                userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                contextExtras = "\"osName\":\"visionOS\",\"osVersion\":\"1.3.21O771\",\"deviceMake\":\"Apple\",\"deviceModel\":\"RealityDevice14,1\"",
+            ),
+            PlaybackClient(
+                name = "ANDROID_VR",
+                version = "1.43.32",
+                id = "28",
+                userAgent = "com.google.android.apps.youtube.vr.oculus/1.43.32 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/107.0.5284.2)",
+                contextExtras = "\"osName\":\"Android\",\"osVersion\":\"12\",\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"androidSdkVersion\":\"32\"",
+            ),
+            PlaybackClient(
+                name = "ANDROID_VR",
+                version = "1.61.48",
+                id = "28",
+                userAgent = "com.google.android.apps.youtube.vr.oculus/1.61.48 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1; Cronet/132.0.6808.3)",
+                contextExtras = "\"osName\":\"Android\",\"osVersion\":\"12\",\"deviceMake\":\"Oculus\",\"deviceModel\":\"Quest 3\",\"androidSdkVersion\":\"32\"",
+            ),
+            PlaybackClient(
+                name = "IOS",
+                version = "21.03.1",
+                id = "5",
+                userAgent = "com.google.ios.youtube/21.03.1 (iPhone16,2; U; CPU iOS 18_2 like Mac OS X;)",
+                contextExtras = "\"osName\":\"iPhone\",\"osVersion\":\"18.2.22C152\",\"deviceMake\":\"Apple\",\"deviceModel\":\"iPhone16,2\"",
+            ),
+        )
+    }
+}
