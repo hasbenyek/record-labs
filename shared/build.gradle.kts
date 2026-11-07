@@ -60,7 +60,7 @@ val generateListenTogetherKey by tasks.registering {
             |internal object ListenTogetherBuildKey {
             |    private val a = byteArrayOf(${masked.literal()})
             |    private val b = byteArrayOf(${mask.literal()})
-            |    val value: String get() = String(ByteArray(a.size) { (a[it].toInt() xor b[it].toInt()).toByte() }, Charsets.UTF_8)
+            |    val value: String get() = ByteArray(a.size) { (a[it].toInt() xor b[it].toInt()).toByte() }.decodeToString()
             |}
             |""".trimMargin()
         )
@@ -91,6 +91,8 @@ kotlin {
     sourceSets {
         // Code for every platform (desktop, Android, iOS): plain Kotlin and Compose only,
         // no Java library. Moved here from jvmSharedMain step by step for the iOS app.
+        // The Listen Together key (generated, never committed) is used on every platform.
+        commonMain.get().kotlin.srcDir(generateListenTogetherKey)
         commonMain.dependencies {
             implementation(compose.runtime)
             implementation(compose.foundation)
@@ -119,7 +121,6 @@ kotlin {
         }
         val jvmSharedMain by creating {
             dependsOn(commonMain.get())
-            kotlin.srcDir(generateListenTogetherKey)
             dependencies {
                 implementation(compose.runtime)
                 implementation(compose.foundation)

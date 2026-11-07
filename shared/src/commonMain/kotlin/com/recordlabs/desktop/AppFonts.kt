@@ -111,3 +111,10 @@ internal expect fun systemFontFamily(name: String, weights: List<FontWeight>): F
 
 /** Fonts bundled with the app (resource paths). */
 internal expect fun bundledFontFamily(fonts: List<Pair<String, FontWeight>>): FontFamily
+
+/**
+ * The typeface of the app's own text (not the lyrics, which keep [AppFonts.lyrics]):
+ * the iPhone's system font (San Francisco, as in Apple Music); null elsewhere (the
+ * platform's default stays).
+ */
+internal expect fun platformUiFontFamily(): FontFamily?

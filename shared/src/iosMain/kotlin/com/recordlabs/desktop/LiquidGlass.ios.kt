@@ -25,6 +25,9 @@ uniform float2 touch;      // the finger, in the recorded area (px)
 uniform float press;       // 0 (not held) .. 1 (held)
 uniform float2 validMin;   // the page's part of the recorded area (outside it: nothing)
 uniform float2 validMax;
+uniform float tintMul;     // how much of the page shows through (the dock: 0.60)
+uniform float tintAdd;     // the glass's own grey
+uniform float sat;         // colour boost of the page behind
 
 float sdRound(float2 p, float2 c, float2 h, float r) {
     float2 q = abs(p - c) - (h - r);
@@ -56,8 +59,8 @@ half4 main(float2 coord) {
     col.a = 1.0;
     // More colour, then the dark glass tint (the page still shows through).
     half l = dot(col.rgb, half3(0.299, 0.587, 0.114));
-    col.rgb = mix(half3(l), col.rgb, 1.35);
-    col.rgb = col.rgb * 0.60 + half3(0.035);
+    col.rgb = mix(half3(l), col.rgb, half(sat));
+    col.rgb = col.rgb * half(tintMul) + half3(half(tintAdd));
     // Light from the top left, or from the finger while it holds the glass.
     float2 toTouch = touch - coord;
     float2 lightDir = normalize(mix(float2(-0.6, -0.8), length(toTouch) > 1.0 ? normalize(toTouch) : float2(-0.6, -0.8), press));
@@ -87,6 +90,8 @@ internal actual fun liquidGlassRenderEffect(
     width: Float, height: Float, margin: Float, density: Float,
     touchX: Float, touchY: Float, press: Float,
     validLeft: Float, validTop: Float, validRight: Float, validBottom: Float,
+    cornerRadius: Float,
+    frosted: Boolean,
 ): RenderEffect? {
     val effect = liquidGlassEffect ?: return null
     if (width <= 0f || height <= 0f) return null
@@ -94,11 +99,16 @@ internal actual fun liquidGlassRenderEffect(
         val builder = RuntimeShaderBuilder(effect)
         builder.uniform("origin", margin, margin)
         builder.uniform("size", width, height)
-        // Pills and circles: fully rounded.
-        builder.uniform("radius", minOf(width, height) / 2f)
-        // The bent rim: about 18 dp wide, bending the page by up to 16 dp.
-        builder.uniform("bezel", 18f * density)
-        builder.uniform("bend", 16f * density)
+        // Pills and circles: fully rounded; panels (menus, dialogs): their own corners.
+        builder.uniform("radius", if (cornerRadius >= 0f) cornerRadius else minOf(width, height) / 2f)
+        // The bent rim: about 18 dp wide, bending the page by up to 16 dp (a panel's rim
+        // is narrower: its text sits close to the edge).
+        builder.uniform("bezel", (if (frosted) 12f else 18f) * density)
+        builder.uniform("bend", (if (frosted) 10f else 16f) * density)
+        // A panel is frosted and darker, so its text reads over any page.
+        builder.uniform("tintMul", if (frosted) 0.42f else 0.60f)
+        builder.uniform("tintAdd", if (frosted) 0.055f else 0.035f)
+        builder.uniform("sat", if (frosted) 1.55f else 1.35f)
         builder.uniform("dpx", density)
         builder.uniform("touch", touchX + margin, touchY + margin)
         builder.uniform("press", press.coerceIn(0f, 1f))
@@ -106,7 +116,8 @@ internal actual fun liquidGlassRenderEffect(
         builder.uniform("validMin", validLeft + 0.5f, validTop + 0.5f)
         builder.uniform("validMax", maxOf(validLeft + 1f, validRight - 0.5f), maxOf(validTop + 1f, validBottom - 0.5f))
         val crop = org.jetbrains.skia.IRect.makeLTRB(validLeft.toInt(), validTop.toInt(), validRight.toInt(), validBottom.toInt())
-        val blur = ImageFilter.makeBlur(2f * density, 2f * density, FilterTileMode.CLAMP, null, crop)
+        val sigma = (if (frosted) 16f else 2f) * density
+        val blur = ImageFilter.makeBlur(sigma, sigma, FilterTileMode.CLAMP, null, crop)
         ImageFilter.makeRuntimeShader(builder, arrayOf("content"), arrayOf(blur)).asComposeRenderEffect()
     }.onFailure { println("Liquid glass unavailable: ${it.message}") }.getOrNull()
 }

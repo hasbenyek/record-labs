@@ -98,3 +98,5 @@ actual fun pickBackupOpenFile(onPicked: (com.recordlabs.desktop.platform.File) -
 
 actual fun lyricGlowShadow(color: androidx.compose.ui.graphics.Color, desktopBlurRadius: Float): androidx.compose.ui.graphics.Shadow =
     androidx.compose.ui.graphics.Shadow(color, blurRadius = desktopBlurRadius)
+
+internal actual fun platformUiFontFamily(): androidx.compose.ui.text.font.FontFamily? = null

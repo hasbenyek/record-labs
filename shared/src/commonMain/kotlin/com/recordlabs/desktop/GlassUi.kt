@@ -88,6 +88,28 @@ internal fun Modifier.liquidGlass(shape: androidx.compose.ui.graphics.Shape, ele
     )
 
 /**
+ * iPhone: the glass card as real liquid glass over the app ([LocalAppBackdrop]),
+ * frosted so its text reads over anything; elsewhere [liquidGlass] as before.
+ */
+@Composable
+internal fun Modifier.liquidGlassPanel(radius: Dp, elevation: Dp = 40.dp): Modifier {
+    val shape = RoundedCornerShape(radius)
+    val backdrop = LocalAppBackdrop.current ?: return liquidGlass(shape, elevation)
+    return this
+        .shadow(elevation, shape, ambientColor = Color.Black.copy(alpha = .40f), spotColor = Color.Black.copy(alpha = .55f))
+        .clip(shape)
+        .liquidGlassBackground(backdrop, cornerRadius = radius, frosted = true)
+        .drawBehind {
+            drawRect(Brush.verticalGradient(0f to Color.White.copy(alpha = .06f), .35f to Color.Transparent))
+        }
+        .border(
+            0.8.dp,
+            Brush.verticalGradient(listOf(Color.White.copy(alpha = .28f), Color.White.copy(alpha = .05f), Color.White.copy(alpha = .12f))),
+            shape,
+        )
+}
+
+/**
  * The dialog of the whole app (desktop and Android, every orientation), as a
  * minimal iOS alert: a liquid-glass card, the title centred, the content, and
  * the buttons as two equal pills at the bottom (Cancel in glass, the main
@@ -125,7 +147,7 @@ internal fun GlassDialog(
                         scaleX = scale
                         scaleY = scale
                     }
-                    .liquidGlass(GlassDialogShape),
+                    .liquidGlassPanel(30.dp),
                 content = {
                     if (title != null) Box(Modifier.layoutId("title").fillMaxWidth(), contentAlignment = Alignment.Center) {
                         ProvideTextStyle(TextStyle(color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)) { title() }

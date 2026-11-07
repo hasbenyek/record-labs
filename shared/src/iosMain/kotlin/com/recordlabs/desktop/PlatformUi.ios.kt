@@ -166,3 +166,29 @@ actual fun pickBackupOpenFile(onPicked: (File) -> Unit) = Unit
 actual fun lyricGlowShadow(color: Color, desktopBlurRadius: Float): androidx.compose.ui.graphics.Shadow =
     androidx.compose.ui.graphics.Shadow(color, blurRadius = desktopBlurRadius)
 
+/**
+ * San Francisco (the iPhone's system font, as in Apple Music). Compose's default on iOS
+ * is Helvetica; SF has no public family name, so it is looked up under the names iOS
+ * gives it, and the first that Skia really finds is used.
+ */
+internal actual fun platformUiFontFamily(): FontFamily? = runCatching {
+    val fonts = org.jetbrains.skia.FontMgr.default
+    val system = platform.UIKit.UIFont.systemFontOfSize(17.0).familyName
+    val candidates = listOf(system, ".AppleSystemUIFont", "System Font", "SF Pro Text", "SF Pro", ".SF UI Text").distinct()
+    val found = candidates.firstOrNull { name ->
+        val face = fonts.matchFamilyStyle(name, org.jetbrains.skia.FontStyle.NORMAL)
+        val family = face?.familyName.orEmpty()
+        face != null && !family.contains("Helvetica", ignoreCase = true) && !family.contains("Arial", ignoreCase = true)
+    }
+    com.recordlabs.desktop.data.AppDiagnostics.log(
+        "app",
+        "UI font: ${found ?: "none of $candidates"} (system family \"$system\")",
+    )
+    if (found == null) return@runCatching null
+    FontFamily(
+        listOf(
+            FontWeight.Light, FontWeight.Normal, FontWeight.Medium, FontWeight.SemiBold,
+            FontWeight.Bold, FontWeight.ExtraBold, FontWeight.Black,
+        ).map { androidx.compose.ui.text.platform.SystemFont(found, it) },
+    )
+}.getOrNull()

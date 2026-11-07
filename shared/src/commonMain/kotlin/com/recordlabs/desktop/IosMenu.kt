@@ -96,7 +96,9 @@ private val MenuMargin = 8.dp
  */
 private class MenuStyle(val dense: Boolean) {
     val width = if (dense) 214.dp else 250.dp
-    val shape = RoundedCornerShape(if (dense) 9.dp else 13.dp)
+    /** iPhone: rounder, as the menus of iOS 26 (drawn in liquid glass there). */
+    val radius = if (AppPlatform.isIos) 22.dp else if (dense) 9.dp else 13.dp
+    val shape = RoundedCornerShape(radius)
     val gap = if (dense) 4.dp else 8.dp
     val rowMinHeight = if (dense) 32.dp else 44.dp
     val rowPadH = if (dense) 11.dp else 16.dp
@@ -238,6 +240,7 @@ internal fun IosMenuDialog(
             latestDismiss()
         }
     }
+    val glassBackdrop = LocalAppBackdrop.current
     Popup(popupPositionProvider = position, onDismissRequest = { closing = true }, properties = PopupProperties(focusable = true)) {
         androidx.compose.runtime.CompositionLocalProvider(LocalMenuStyle provides style) {
             Column(
@@ -264,8 +267,16 @@ internal fun IosMenuDialog(
                     .heightIn(max = (windowHeight - MenuMargin * 2).coerceAtLeast(200.dp))
                     .shadow(if (dense) 14.dp else 28.dp, style.shape, ambientColor = Color.Black.copy(alpha = 0.4f), spotColor = Color.Black.copy(alpha = 0.5f))
                     .clip(style.shape)
-                    .background(style.card)
-                    .border(0.6.dp, Color.White.copy(alpha = if (dense) 0.14f else 0.06f), style.shape)
+                    // iPhone: liquid glass over the app (frosted, so the rows read over
+                    // anything); elsewhere the solid card as before.
+                    .then(
+                        if (glassBackdrop != null) Modifier
+                            .liquidGlassBackground(glassBackdrop, cornerRadius = style.radius, frosted = true)
+                            .border(0.6.dp, Color.White.copy(alpha = 0.16f), style.shape)
+                        else Modifier
+                            .background(style.card)
+                            .border(0.6.dp, Color.White.copy(alpha = if (dense) 0.14f else 0.06f), style.shape),
+                    )
                     .verticalScroll(rememberScrollState()),
             ) {
                 // Every group starts with a band; the first one is pulled out of sight.

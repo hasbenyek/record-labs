@@ -227,3 +227,5 @@ internal actual fun DrawScope.drawFloatingLetter(
     }
     canvas.restore()
 }
+
+internal actual fun platformUiFontFamily(): FontFamily? = null

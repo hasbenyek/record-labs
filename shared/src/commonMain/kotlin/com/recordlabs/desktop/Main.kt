@@ -469,6 +469,9 @@ internal fun AlertDialog(
     text: (@Composable () -> Unit)? = null,
 ) = GlassDialog(onDismissRequest, confirmButton, modifier, dismissButton, title, text)
 
+/** The app's own text: San Francisco on the iPhone (as in Apple Music); the lyrics keep theirs. */
+private val appUiFontFamily: FontFamily by lazy { platformUiFontFamily() ?: FontFamily.Default }
+
 private fun Modifier.dragHorizontally(state: androidx.compose.foundation.ScrollState): Modifier =
     pointerInput(state) {
         detectHorizontalDragGestures { change, dragAmount ->
@@ -644,7 +647,7 @@ internal fun RecordLabsWindow(
             onBackground = Color.White,
             onSurface = Color.White,
         ),
-        typography = androidx.compose.material.Typography(defaultFontFamily = FontFamily.Default),
+        typography = androidx.compose.material.Typography(defaultFontFamily = appUiFontFamily),
         shapes = Shapes(
             small = RoundedCornerShape(14.dp),
             medium = RoundedCornerShape(22.dp),
@@ -2723,7 +2726,9 @@ internal fun RecordLabsWindow(
             val latestSearchBoxFocused by rememberUpdatedState(searchBoxFocused)
             val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
             // iPhone: the app fills the screen under the status bar and home indicator (EdgeToEdge.kt).
-            androidx.compose.runtime.CompositionLocalProvider(LocalOpenCatalog provides ::openCatalogPage, LocalOpenTrackAlbum provides ::openTrackAlbum, LocalOpenTrackArtist provides ::openTrackArtist, LocalEdgeInsets provides rememberEdgeInsets()) {
+            // iPhone: the app under its menus, dialogs and sheets, for their liquid glass.
+            val appBackdrop = rememberGlassBackdrop(onDemand = true)
+            androidx.compose.runtime.CompositionLocalProvider(LocalOpenCatalog provides ::openCatalogPage, LocalOpenTrackAlbum provides ::openTrackAlbum, LocalOpenTrackArtist provides ::openTrackArtist, LocalEdgeInsets provides rememberEdgeInsets(), LocalAppBackdrop provides appBackdrop) {
             BoxWithConstraints(Modifier.fillMaxSize().appSafeArea().menuAnchorTracker().pointerInput(Unit) {
                 awaitPointerEventScope {
                     while (true) {
@@ -2764,6 +2769,7 @@ internal fun RecordLabsWindow(
                 SearchBackdrop.active = landscapeSearchExpanded
                 androidx.compose.foundation.layout.Box(
                     Modifier.fillMaxSize()
+                        .glassBackdropSource(appBackdrop)
                         .onGloballyPositioned { SearchBackdrop.originInWindow = it.positionInWindow() }
                         .drawWithContent {
                             if (SearchBackdrop.active) {
@@ -3585,11 +3591,14 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // iPhone: the card is liquid glass over the app (the page behind dims less, it
+    // shows through the glass).
+    val glassBackdrop = LocalAppBackdrop.current
     Box(
         Modifier
             .fillMaxSize()
             .zIndex(80f)
-            .background(Color.Black.copy(alpha = .88f))
+            .background(Color.Black.copy(alpha = if (glassBackdrop != null) .45f else .88f))
             .clickable(onClick = onDismiss)
             .padding(24.dp),
         contentAlignment = Alignment.Center,
@@ -3606,11 +3615,12 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
                 )
                 .widthIn(max = 620.dp)
                 .fillMaxWidth()
+                .then(if (glassBackdrop != null) Modifier.liquidGlassPanel(30.dp, elevation = 24.dp) else Modifier)
                 .clickable { },
             shape = RoundedCornerShape(30.dp),
-            color = SurfaceColor.copy(alpha = .97f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = .14f)),
-            elevation = 24.dp,
+            color = if (glassBackdrop != null) Color.Transparent else SurfaceColor.copy(alpha = .97f),
+            border = if (glassBackdrop != null) null else BorderStroke(1.dp, Color.White.copy(alpha = .14f)),
+            elevation = if (glassBackdrop != null) 0.dp else 24.dp,
         ) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -9020,11 +9030,15 @@ private fun PlayerMenuBottomSheet(
 private fun TrackDetailsDialog(track: Track, onDismiss: () -> Unit) {
     // A plain dialog: AlertDialog's title/text slots made the artwork overlap the title.
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        // iPhone: liquid glass over the app.
+        val glass = LocalAppBackdrop.current != null
         Surface(
-            modifier = Modifier.widthIn(min = 360.dp, max = 520.dp),
+            modifier = Modifier.widthIn(min = if (glass) 0.dp else 360.dp, max = 520.dp)
+                .then(if (glass) Modifier.liquidGlassPanel(22.dp, elevation = 24.dp) else Modifier),
             shape = RoundedCornerShape(22.dp),
-            color = MaterialTheme.colors.surface,
-            border = BorderStroke(1.dp, HeaderGlassBorder),
+            color = if (glass) Color.Transparent else MaterialTheme.colors.surface,
+            border = if (glass) null else BorderStroke(1.dp, HeaderGlassBorder),
+            elevation = 0.dp,
         ) {
             Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 22.dp, bottom = 12.dp)) {
                 Text("Track details", color = SecondaryText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)

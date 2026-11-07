@@ -53,7 +53,9 @@ import kotlin.math.ceil
  *
  * The desktop and Android keep their glass as it was ([liquidGlassRenderEffect] is null there).
  */
-internal class GlassBackdrop(val layer: GraphicsLayer) {
+internal class GlassBackdrop(val layer: GraphicsLayer, val onDemand: Boolean = false) {
+    /** The glass surfaces reading it now (an on-demand page is recorded only while there are some). */
+    var users by mutableIntStateOf(0)
     /** Where the recorded page is, in the window. */
     var originInWindow by mutableStateOf(Offset.Zero)
     /** Changes each time the page is recorded again, so the glass over it is redrawn. */
@@ -74,6 +76,12 @@ internal class GlassBackdrop(val layer: GraphicsLayer) {
 internal val LocalGlassBackdrop = staticCompositionLocalOf<GlassBackdrop?> { null }
 
 /**
+ * The whole app under its menus, dialogs and sheets (iPhone): they are drawn as liquid
+ * glass over it. Recorded only while one of them is open.
+ */
+internal val LocalAppBackdrop = staticCompositionLocalOf<GlassBackdrop?> { null }
+
+/**
  * The glass effect for a fully rounded shape (pill or circle) of [width] x [height] px,
  * reading a recording [margin] px larger on every side; null where the platform keeps
  * its own glass.
@@ -83,6 +91,10 @@ internal expect fun liquidGlassRenderEffect(
     touchX: Float, touchY: Float, press: Float,
     /** The part of the recorded area the page covers (by the screen's edge the rest is empty). */
     validLeft: Float, validTop: Float, validRight: Float, validBottom: Float,
+    /** A panel's corner radius in px (menus, dialogs); below 0: fully rounded (pill or circle). */
+    cornerRadius: Float = -1f,
+    /** A panel: frosted (much more blur) and darker, so its text reads over any page. */
+    frosted: Boolean = false,
 ): RenderEffect?
 
 /**
@@ -149,10 +161,10 @@ internal expect val liquidGlassSupported: Boolean
 
 /** A recorder for the page under the glass, or null where the glass is not drawn. */
 @Composable
-internal fun rememberGlassBackdrop(): GlassBackdrop? {
+internal fun rememberGlassBackdrop(onDemand: Boolean = false): GlassBackdrop? {
     if (!liquidGlassSupported) return null
     val layer = rememberGraphicsLayer()
-    val backdrop = remember(layer) { GlassBackdrop(layer) }
+    val backdrop = remember(layer) { GlassBackdrop(layer, onDemand) }
     // Other changes under the glass (a picture loading, an animation) show within a
     // moment: only the glass is redrawn, not the page.
     LaunchedEffect(backdrop) {
@@ -171,6 +183,10 @@ internal fun Modifier.glassBackdropSource(backdrop: GlassBackdrop?): Modifier =
         .nestedScroll(backdrop.scrollWatcher)
         .onGloballyPositioned { backdrop.originInWindow = it.positionInWindow() }
         .drawWithContent {
+            if (backdrop.onDemand && backdrop.users == 0) {
+                drawContent()
+                return@drawWithContent
+            }
             backdrop.layer.record { this@drawWithContent.drawContent() }
             drawLayer(backdrop.layer)
             backdrop.version++
@@ -178,8 +194,19 @@ internal fun Modifier.glassBackdropSource(backdrop: GlassBackdrop?): Modifier =
 
 /** The liquid glass behind a pill or circle (the dock's surfaces), over the recorded page. */
 @Composable
-internal fun Modifier.liquidGlassBackground(backdrop: GlassBackdrop?, press: GlassPressState? = null): Modifier {
+internal fun Modifier.liquidGlassBackground(
+    backdrop: GlassBackdrop?,
+    press: GlassPressState? = null,
+    /** A panel's corners (menus, dialogs); null: fully rounded (pill or circle). */
+    cornerRadius: androidx.compose.ui.unit.Dp? = null,
+    /** A panel: frosted and darker (see [liquidGlassRenderEffect]). */
+    frosted: Boolean = false,
+): Modifier {
     if (backdrop == null) return this
+    androidx.compose.runtime.DisposableEffect(backdrop) {
+        backdrop.users++
+        onDispose { backdrop.users-- }
+    }
     val glass = rememberGraphicsLayer()
     val state = remember { object { var origin = Offset.Zero; var effect: RenderEffect? = null; var effectKey = "" } }
     return this
@@ -207,6 +234,8 @@ internal fun Modifier.liquidGlassBackground(backdrop: GlassBackdrop?, press: Gla
                 state.effect = liquidGlassRenderEffect(
                     size.width, size.height, margin, density, touch.x, touch.y, held,
                     validLeft, validTop, validRight, validBottom,
+                    cornerRadius = cornerRadius?.toPx() ?: -1f,
+                    frosted = frosted,
                 )
                 state.effectKey = key
             }

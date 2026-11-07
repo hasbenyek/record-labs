@@ -1,7 +1,8 @@
 package com.recordlabs.desktop.data
 
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
+import com.recordlabs.desktop.platform.currentTimeMillis
+import com.recordlabs.desktop.platform.hmac
+import com.recordlabs.desktop.platform.toHex
 
 /**
  * Proves to the Record Labs Listen Together server that this is an official build.
@@ -15,14 +16,11 @@ internal object ListenTogetherAuth {
     const val HEADER = "X-RecordLabs-Auth"
 
     /** "v1.<unix seconds>.<hex HMAC-SHA256>", or null when this build has no key. */
-    fun token(nowMillis: Long = System.currentTimeMillis()): String? {
+    fun token(nowMillis: Long = currentTimeMillis()): String? {
         val key = ListenTogetherBuildKey.value
         if (key.isBlank()) return null
         val seconds = (nowMillis / 1000).toString()
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(key.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        val signature = mac.doFinal("recordlabs-listen.v1.$seconds".toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val signature = hmac("HmacSHA256", key.encodeToByteArray(), "recordlabs-listen.v1.$seconds".encodeToByteArray()).toHex()
         return "v1.$seconds.$signature"
     }
 }
