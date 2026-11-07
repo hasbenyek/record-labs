@@ -653,6 +653,15 @@ internal fun RecordLabsWindow(
     ) {
         val repository = remember { WindowsMusicRepository() }
         val mediaPlayer = remember { createPlaybackEngine() }
+        // iPhone: what the first song needs is fetched at launch, and the last song's
+        // stream is loaded, so pressing play starts at once.
+        LaunchedEffect(repository) {
+            if (!AppPlatform.isIos) return@LaunchedEffect
+            repository.warmPlayback()
+            val last = restoredPlayback?.track?.takeIf { it.localPath.isNullOrBlank() } ?: return@LaunchedEffect
+            val url = runCatching { repository.playbackStreamUrl(last) }.getOrNull() ?: return@LaunchedEffect
+            if (mediaPlayer.currentTrack == null) com.recordlabs.desktop.data.MediaPlatform.preloadNext(last.id, url)
+        }
         DisposableEffect(repository, mediaPlayer) {
             onDispose {
                 mediaPlayer.release()
@@ -1087,6 +1096,7 @@ internal fun RecordLabsWindow(
                 )
             }
             scope.launch {
+                val tappedAt = currentTimeMillis()
                 var rawUrl: String? = null
                 for (attempt in 1..4) {
                     rawUrl = runCatching { repository.playbackStreamUrl(track) }.getOrNull()
@@ -1119,28 +1129,42 @@ internal fun RecordLabsWindow(
                     // iPhone: a stream that does not start, stops, or stands still while it
                     // should play gets another source (from where it was), twice at most.
                     if (AppPlatform.isIos) {
+                        val foundAt = currentTimeMillis()
                         val firstUrl: String = rawUrl
                         scope.launch {
                             var url = firstUrl
                             var retries = 0
                             var lastPosition = -1L
                             var lastProgressAt = currentTimeMillis()
+                            // The sound has started from this source (a first start that hangs
+                            // gets another source after 5 s instead of 12).
+                            var progressed = false
+                            var startPosition = -1L
                             while (requestId == playbackRequestId && currentTrack?.id == track.id) {
                                 delay(500L)
                                 if (requestId != playbackRequestId || currentTrack?.id != track.id) break
                                 val position = mediaPlayer.positionMs
                                 val now = currentTimeMillis()
+                                if (startPosition < 0L) startPosition = position
+                                if (position > startPosition + 300L && !progressed) {
+                                    progressed = true
+                                    if (retries == 0) com.recordlabs.desktop.data.AppDiagnostics.log(
+                                        "playback",
+                                        "\"${track.title}\": sound after ${now - tappedAt} ms (stream found after ${foundAt - tappedAt} ms)",
+                                    )
+                                }
                                 if (position != lastPosition || !isPlaying) {
                                     lastPosition = position
                                     lastProgressAt = now
                                 }
                                 // The song's end (nothing more to play) is not a stall.
                                 val atEnd = mediaPlayer.durationMs > 0L && position >= mediaPlayer.durationMs - 3_000L
-                                val failed = mediaPlayer.lastError != null || (isPlaying && !atEnd && now - lastProgressAt > 12_000L)
+                                val stallLimit = if (progressed) 12_000L else 5_000L
+                                val failed = mediaPlayer.lastError != null || (isPlaying && !atEnd && now - lastProgressAt > stallLimit)
                                 if (!failed) continue
                                 com.recordlabs.desktop.data.AppDiagnostics.log(
                                     "playback",
-                                    "\"${track.title}\": ${mediaPlayer.lastError ?: "no progress for 12 s"} at ${position / 1000} s",
+                                    "\"${track.title}\": ${mediaPlayer.lastError ?: "no progress for ${stallLimit / 1000} s"} at ${position / 1000} s",
                                 )
                                 if (retries >= 2) {
                                     playbackLoading = false
@@ -1165,6 +1189,8 @@ internal fun RecordLabsWindow(
                                 if (!wasPlaying) mediaPlayer.pause()
                                 lastPosition = -1L
                                 lastProgressAt = currentTimeMillis()
+                                progressed = false
+                                startPosition = -1L
                             }
                         }
                     }

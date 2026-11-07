@@ -1885,7 +1885,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
 
             // 1. Race all InnerTube clients
             // Settings > Stream sources decides which sources take part.
-            val innerTubeJobs = PLAYBACK_CLIENTS.filter { AppSettings.isStreamSourceEnabled(it.name) }.map { playbackClient ->
+            // iPhone: no player.js here, so the web/TV clients' URLs (their `n` unsolved) are
+            // slowed to a crawl by YouTube or refused part way: only the direct clients.
+            val innerTubeJobs = PLAYBACK_CLIENTS
+                .filter { AppSettings.isStreamSourceEnabled(it.name) && !(AppPlatform.isIos && it.requiresJsPlayer) }
+                .map { playbackClient ->
                 race.async {
                     val candidate = fetchInnerTubeUrl(videoId, playbackClient)?.let { url ->
                         // One retry: a single slow CDN edge must not throw away an
@@ -1962,17 +1966,54 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
 
     private suspend fun playbackVisitorData(): String? {
         anonymousVisitorData?.let { return it }
+        // iPhone: the id from an earlier launch (a few days old at most), so the first
+        // song does not wait for the YouTube Music page; a fresh one is read meanwhile.
+        if (AppPlatform.isIos) savedVisitorData()?.let { saved ->
+            anonymousVisitorData = saved
+            streamResolveScope.launch {
+                fetchAnonymousVisitorData()?.let { fresh ->
+                    anonymousVisitorData = fresh
+                    saveVisitorData(fresh)
+                }
+            }
+            return saved
+        }
         val fetched = visitorDataLock.withLock {
             anonymousVisitorData ?: if (currentTimeMillis() >= visitorDataRetryAfterMs) {
                 // NonCancellable: a short-lived repository closing mid-fetch must
                 // not discard the id every other instance is waiting for.
                 withContext(kotlinx.coroutines.NonCancellable) { fetchAnonymousVisitorData() }.also { value ->
-                    if (value != null) anonymousVisitorData = value
+                    if (value != null) {
+                        anonymousVisitorData = value
+                        if (AppPlatform.isIos) saveVisitorData(value)
+                    }
                     else visitorDataRetryAfterMs = currentTimeMillis() + 10_000L
                 }
             } else null
         }
         return fetched ?: WindowsPreferences.googleSession()?.visitorData?.takeIf(String::isNotBlank)
+    }
+
+    private fun savedVisitorData(): String? = runCatching {
+        val savedAt = WindowsPreferences.getString(VISITOR_DATA_AT_KEY, "").toLongOrNull() ?: return@runCatching null
+        if (currentTimeMillis() - savedAt > 3L * 24 * 60 * 60 * 1000) return@runCatching null
+        WindowsPreferences.getString(VISITOR_DATA_KEY, "").ifBlank { null }
+    }.getOrNull()
+
+    private fun saveVisitorData(value: String) {
+        runCatching {
+            WindowsPreferences.putString(VISITOR_DATA_KEY, value)
+            WindowsPreferences.putString(VISITOR_DATA_AT_KEY, currentTimeMillis().toString())
+        }
+    }
+
+    /**
+     * iPhone: gets what the first song needs before it is asked for (the visitor id), so
+     * the first song starts as fast as the next ones.
+     */
+    fun warmPlayback() {
+        if (!AppPlatform.isIos) return
+        streamResolveScope.launch { runCatching { playbackVisitorData() } }
     }
 
     private suspend fun fetchAnonymousVisitorData(): String? = withContext(IoDispatcher) {
@@ -3019,6 +3060,8 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         private const val MAX_SHELF_PAGES = 30
         private val visitorWarmupScope = CoroutineScope(SupervisorJob() + IoDispatcher)
         @kotlin.concurrent.Volatile private var sharedVisitorData: String? = null
+        private const val VISITOR_DATA_KEY = "playbackVisitorData"
+        private const val VISITOR_DATA_AT_KEY = "playbackVisitorDataAt"
         @kotlin.concurrent.Volatile private var visitorDataRetryAfterMs = 0L
         private val visitorDataLock = kotlinx.coroutines.sync.Mutex()
         private const val PLAYBACK_CACHE_DOWNLOAD_DELAY_MS = 2_500L
