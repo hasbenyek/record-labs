@@ -3657,7 +3657,8 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
         ) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onDismiss) {
+                    if (AppPlatform.isIos) LiquidGlassCircleButton(Icons.Default.ArrowBack, "Back", onDismiss, size = 40.dp, iconSize = 21.dp)
+                    else IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
                     }
                     Spacer(Modifier.width(8.dp))
@@ -4892,8 +4893,9 @@ private fun ProfileRouteContent(
         if (compact && page != ProfilePage.ListenTogether) Row(verticalAlignment = Alignment.CenterVertically) {
             // Compact windows have no header bar: every sub page gets its own way back.
             if (page != ProfilePage.Home) {
-                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
-                Spacer(Modifier.width(4.dp))
+                if (AppPlatform.isIos) LiquidGlassCircleButton(Icons.Default.ArrowBack, "Back", onBack, size = 40.dp, iconSize = 21.dp)
+                else IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back", tint = Color.White) }
+                Spacer(Modifier.width(if (AppPlatform.isIos) 10.dp else 4.dp))
             }
             Text(
                 when (page) {
@@ -5037,7 +5039,8 @@ private fun ListenTogetherPage(showSettings: Boolean, compact: Boolean, onBack: 
             // Portrait has no header bar: Back returns to where the page was opened from
             // (Integrations, or the page before the Listen Together button was pressed).
             if (compact && onBack != null) {
-                Surface(
+                if (AppPlatform.isIos) LiquidGlassCircleButton(Icons.Default.ArrowBack, "Back", onBack, Modifier.padding(end = 12.dp), size = 40.dp, iconSize = 21.dp)
+                else Surface(
                     shape = CircleShape,
                     color = HeaderGlass,
                     border = BorderStroke(1.dp, HeaderGlassBorder),
@@ -5508,7 +5511,8 @@ private fun ListenTogetherSettingsPage(compact: Boolean, onBack: () -> Unit) {
     Column(Modifier.fillMaxWidth().pageScrollbar(pageScroll).verticalScroll(pageScroll)) {
         // Wide windows go back with the shared header's back button; compact ones have no header bar.
         if (compact) Row(Modifier.padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back to Listen Together", tint = Color.White) }
+            if (AppPlatform.isIos) LiquidGlassCircleButton(Icons.Default.ArrowBack, "Back to Listen Together", onBack, Modifier.padding(end = 6.dp), size = 40.dp, iconSize = 21.dp)
+            else IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back to Listen Together", tint = Color.White) }
             Spacer(Modifier.width(4.dp))
             Text("Listen Together settings", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         } else SettingsPageHeader("Listen Together settings", "How you appear and what guests can do in your room", Icons.Default.Group, compact = false)
@@ -6460,7 +6464,8 @@ private fun LibraryPage(
             if (compact) Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 // Portrait has no header bar with Back: Library's own pages get one, beside the search box.
                 if (selected != LIBRARY_HUB) {
-                    Surface(
+                    if (AppPlatform.isIos) LiquidGlassCircleButton(Icons.Default.ArrowBack, "Back", { if (!onBack()) onNavigate(null) }, Modifier.padding(end = 10.dp))
+                    else Surface(
                         shape = CircleShape,
                         color = HeaderGlass,
                         border = BorderStroke(1.dp, HeaderGlassBorder),
@@ -7682,8 +7687,10 @@ private fun CatalogPage(
         // Portrait album / playlist: the artwork's colours behind the page, as on
         // the player and lyrics pages.
         if (compact && destination.kind != "Artist") PlayerAmbientBackground(loaded.artworkUrl)
+        // iPhone: the list is recorded for the liquid glass of the back and ⋯ buttons over it.
+        val headerBackdrop = if (compact && AppPlatform.isIos) rememberGlassBackdrop() else null
         LazyColumn(
-            Modifier.fillMaxSize().pageScrollbar(catalogListState)
+            Modifier.fillMaxSize().glassBackdropSource(headerBackdrop).pageScrollbar(catalogListState)
                 // Artist pages scroll by click-and-drag too, like the home page.
                 .let { if (destination.kind == "Artist") it.dragVertically(catalogListState) else it },
             state = catalogListState,
@@ -8011,12 +8018,24 @@ private fun CatalogPage(
         if (compact) {
             // iPhone: the artwork runs on under the status bar, shaded there; the buttons stay below it.
             StatusBarScrim(Modifier.align(Alignment.TopCenter))
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
+            if (AppPlatform.isIos) {
+                LiquidGlassCircleButton(
+                    Icons.Default.ArrowBack, "Back", onBack,
+                    Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp),
+                    backdrop = headerBackdrop,
+                )
+            } else IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
             }
             // Album / playlist: its menu (play, save to library, share...) at the top right.
             if (isCollectionPage) {
-                IconButton(
+                if (AppPlatform.isIos) {
+                    LiquidGlassCircleButton(
+                        Icons.Default.MoreHoriz, "More", { showPageMenu = true },
+                        Modifier.align(Alignment.TopEnd).padding(top = statusBarRoom(true)).padding(16.dp),
+                        backdrop = headerBackdrop,
+                    )
+                } else IconButton(
                     onClick = { showPageMenu = true },
                     modifier = Modifier.align(Alignment.TopEnd).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape),
                 ) {
@@ -8106,8 +8125,9 @@ private fun ArtistShelfPage(
             it.isBlank() || it.startsWith("Unknown", true) || it.equals(destination.title, true)
         }
         val shelfListState = rememberLazyListState()
+        val headerBackdrop = if (compact && AppPlatform.isIos) rememberGlassBackdrop() else null
         LazyColumn(
-            Modifier.fillMaxSize().pageScrollbar(shelfListState).dragVertically(shelfListState),
+            Modifier.fillMaxSize().glassBackdropSource(headerBackdrop).pageScrollbar(shelfListState).dragVertically(shelfListState),
             state = shelfListState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(top = (if (compact) 72.dp else 96.dp) + statusBarRoom(compact), bottom = 168.dp),
         ) {
@@ -8153,7 +8173,13 @@ private fun ArtistShelfPage(
         }
         if (compact) {
             StatusBarScrim(Modifier.align(Alignment.TopCenter))
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
+            if (AppPlatform.isIos) {
+                LiquidGlassCircleButton(
+                    Icons.Default.ArrowBack, "Back", onBack,
+                    Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp),
+                    backdrop = headerBackdrop,
+                )
+            } else IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
             }
         }
@@ -8805,8 +8831,11 @@ internal fun PlayerPage(
                                         modifier = if (wideVideo) Modifier.fillMaxSize().padding(top = 8.dp, bottom = 6.dp)
                                         // A little higher than the title row, so a long active line's
                                         // second row (grown while lit) is not cut at the bottom.
-                                        else Modifier.fillMaxWidth().height(100.dp).padding(bottom = 16.dp),
+                                        // (iPhone: room for two whole rows of a long line.)
+                                        else Modifier.fillMaxWidth().height(if (AppPlatform.isIos) 124.dp else 100.dp).padding(bottom = if (AppPlatform.isIos) 10.dp else 16.dp),
                                         showNextLines = wideVideo,
+                                        // iPhone: the lyrics here only show; a tap opens the lyrics page.
+                                        onOpen = if (AppPlatform.isIos) onLyrics else null,
                                     )
                                 }
                             }
@@ -10355,7 +10384,7 @@ internal fun LyricsPage(
  * next lines below it. Nothing is shown when the song has no lyrics.
  */
 @Composable
-private fun PortraitLyricsPreview(track: Track, positionMs: Long, isPlaying: Boolean, onSeek: (Long) -> Unit, modifier: Modifier, showNextLines: Boolean = false) {
+private fun PortraitLyricsPreview(track: Track, positionMs: Long, isPlaying: Boolean, onSeek: (Long) -> Unit, modifier: Modifier, showNextLines: Boolean = false, onOpen: (() -> Unit)? = null) {
     // A music video shows its song's lyrics, as on the lyrics page (see [LyricsSource]).
     val lyricsSource = rememberLyricsSource(track)
     val lyricsTrack = lyricsSource.track
@@ -10388,10 +10417,13 @@ private fun PortraitLyricsPreview(track: Track, positionMs: Long, isPlaying: Boo
     }
     LyricsLines(
         groups, activeIndex, lyricsPositionMs, isPlaying, modifier,
-        isLoading = false, hasError = false, provider = provider, onSeek = { ms -> onSeek(lyricsSource.playbackPosition(ms)) },
+        isLoading = false, hasError = false, provider = provider,
+        // A tap on a line opens the lyrics page when [onOpen] is given (iPhone), else seeks there.
+        onSeek = { ms -> if (onOpen != null) onOpen() else onSeek(lyricsSource.playbackPosition(ms)) },
         textSize = 22f, pronunciationEnabled = com.recordlabs.desktop.data.AppSettings.lyricsPronunciation.value,
         anchorFraction = 0f,
         onlyActiveLine = !showNextLines,
+        onTap = onOpen,
     )
 }
 
@@ -11179,8 +11211,11 @@ private fun LyricsLines(
     /** No lyrics: offered under the message (same as Refetch / Search in the menu). */
     onRefetch: (() -> Unit)? = null,
     onSearchLyrics: (() -> Unit)? = null,
+    /** A preview (the player's lyrics): no scrolling; a tap anywhere calls this (opens the lyrics page). */
+    onTap: (() -> Unit)? = null,
 ) {
     var manualBrowseOverride by remember { mutableStateOf(false) }
+    val latestOnTap by androidx.compose.runtime.rememberUpdatedState(onTap)
     // While the main window is minimized the lyrics stand still at the last
     // position shown (the music plays on) and catch up when it is back.
     val windowShown = MainWindowActivity.isShown
@@ -11267,6 +11302,8 @@ private fun LyricsLines(
             .graphicsLayer { alpha = 0.99f }
             .drawWithContent {
                 drawContent()
+                // The player's one-line preview: no fade (it cut a long line's second row).
+                if (onlyActiveLine && onTap != null) return@drawWithContent
                 drawRect(
                     brush = androidx.compose.ui.graphics.Brush.verticalGradient(
                         0.0f to androidx.compose.ui.graphics.Color.Transparent,
@@ -11288,8 +11325,10 @@ private fun LyricsLines(
                     change.consume()
                 }
             }
-            .pointerInput(groups) {
-                if (iosBrowse) {
+            .pointerInput(groups, onTap != null) {
+                if (latestOnTap != null) {
+                    detectTapGestures { latestOnTap?.invoke() }
+                } else if (iosBrowse) {
                     val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
                     detectVerticalDragGestures(
                         onDragStart = {

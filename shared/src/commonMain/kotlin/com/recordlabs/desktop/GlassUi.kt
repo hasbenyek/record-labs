@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.LocalContentColor
@@ -343,5 +345,67 @@ internal fun QueueResizeHandle(modifier: Modifier, panelOnRight: Boolean) {
         contentAlignment = Alignment.Center,
     ) {
         Box(Modifier.width(4.dp).height(44.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = gripAlpha)))
+    }
+}
+
+/**
+ * The page under a page's own floating buttons (back, more): the scrolling content
+ * only, recorded beside the buttons (never around them), so they can be drawn in liquid
+ * glass over it. Null where a page does not record one.
+ */
+internal val LocalHeaderBackdrop = androidx.compose.runtime.staticCompositionLocalOf<GlassBackdrop?> { null }
+
+/**
+ * A round floating button (back arrow, the album page's ⋯): liquid glass over the page
+ * ([LocalHeaderBackdrop]) on the iPhone, stretching under the finger as the dock's
+ * buttons do; where there is no recording of the page, a glass-like circle (dark tint,
+ * light rim and sheen) instead.
+ */
+@Composable
+internal fun LiquidGlassCircleButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    size: Dp = 44.dp,
+    iconSize: Dp = 22.dp,
+    tint: Color = Color.White,
+    enabled: Boolean = true,
+    backdrop: GlassBackdrop? = LocalHeaderBackdrop.current,
+) {
+    val press = remember { GlassPressState() }
+    val circle = androidx.compose.foundation.shape.CircleShape
+    val surface = if (backdrop != null) {
+        Modifier
+            .shadow(8.dp, circle, ambientColor = Color.Black.copy(alpha = .22f), spotColor = Color.Black.copy(alpha = .30f))
+            .liquidGlassBackground(backdrop, press)
+    } else {
+        Modifier
+            .shadow(8.dp, circle, ambientColor = Color.Black.copy(alpha = .25f), spotColor = Color.Black.copy(alpha = .35f))
+            .clip(circle)
+            .background(Brush.verticalGradient(listOf(Color(0x8C3A3B40), Color(0xA6202125))))
+            .drawBehind {
+                drawRect(Brush.verticalGradient(0f to Color.White.copy(alpha = .14f), .45f to Color.Transparent))
+            }
+            .border(
+                0.8.dp,
+                Brush.verticalGradient(listOf(Color.White.copy(alpha = .38f), Color.White.copy(alpha = .06f), Color.White.copy(alpha = .16f))),
+                circle,
+            )
+    }
+    Box(
+        modifier
+            .size(size)
+            .glassPress(press)
+            .then(surface)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.material.Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(iconSize))
     }
 }

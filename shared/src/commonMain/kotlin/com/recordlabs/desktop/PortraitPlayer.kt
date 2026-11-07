@@ -600,7 +600,9 @@ internal fun PortraitQueuePanel(
     // History arrives newest first; shown oldest first so the latest sits right above the song playing.
     val played = remember(history, track.id) { history.filter { it.id != track.id }.reversed() }
     // Index of the song playing in the list: the history header, its songs, then this.
-    val nowIndex = if (played.isEmpty()) 0 else played.size + 1
+    // (The history's last row is followed by a gap item: the song playing's header then sits
+    // exactly at the top, level with the lyrics page's header.)
+    val nowIndex = if (played.isEmpty()) 0 else played.size + 2
     val list = rememberLazyListState(initialFirstVisibleItemIndex = nowIndex)
     val reorder = remember { ReorderState() }
     val upcoming = remember(queue, activeIndex) { queue.drop((activeIndex + 1).coerceAtLeast(0)) }
@@ -663,9 +665,10 @@ internal fun PortraitQueuePanel(
                 items(played, key = { "h:" + it.id }) { item ->
                     QueueSongRow(item, Modifier.clip(RoundedCornerShape(8.dp)).clickable { onPlayHistory(item) })
                 }
+                item(key = "history-gap") { Spacer(Modifier.height(14.dp)) }
             }
             item(key = "now-playing") {
-                Column(Modifier.fillMaxWidth().padding(top = if (played.isEmpty()) 0.dp else 14.dp)) {
+                Column(Modifier.fillMaxWidth()) {
                     PortraitMiniHeader(track, isLiked, onToggleLiked, onMore)
                     Spacer(Modifier.height(16.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
