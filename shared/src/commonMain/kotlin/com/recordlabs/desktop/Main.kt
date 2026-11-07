@@ -2127,6 +2127,7 @@ internal fun RecordLabsWindow(
             libraryTarget.value = snapshot.libraryTarget
         }
         fun navigateBack(): Boolean {
+            PageTransition.back()
             if (profilePage == ProfilePage.ListenTogether && ListenTogetherUi.settingsOpen && playerDestination == null) {
                 ListenTogetherUi.settingsOpen = false
                 return true
@@ -2198,6 +2199,7 @@ internal fun RecordLabsWindow(
         // Back to the page the user was on before entering the Library (Home
         // when there is none).
         fun leaveLibrary() {
+            PageTransition.back()
             val index = navigationHistory.indexOfLast {
                 it.playerDestination == null && (it.section != AppSection.Library || it.catalogDestination != null || it.profilePage != null)
             }
@@ -2232,7 +2234,7 @@ internal fun RecordLabsWindow(
         var compactPastHeader by remember { mutableStateOf(false) }
         val compactScrollDepth = remember { floatArrayOf(0f, 0f) } // [depth px, header height px]
         // Another page starts with the dock and the search box showing.
-        LaunchedEffect(section) {
+        LaunchedEffect(section, catalogDestination, profilePage) {
             compactDockCollapsed = false
             compactPastHeader = false
             compactScrollDepth[0] = 0f
@@ -2250,6 +2252,8 @@ internal fun RecordLabsWindow(
             }
         }
         val performNavSelect: (AppSection) -> Unit = { it ->
+            // The dock's tabs: the pages fade (iPhone).
+            PageTransition.tab()
             if (it == AppSection.Home) {
                 performHomeAction()
             } else if (it == AppSection.Library && section == AppSection.Library && catalogDestination == null && profilePage == null) {
@@ -2496,6 +2500,7 @@ internal fun RecordLabsWindow(
         }
         
         fun openListenTogether() {
+            PageTransition.tab()
             pushNavigation()
             playerDestination = null
             catalogDestination = null
@@ -2787,7 +2792,14 @@ internal fun RecordLabsWindow(
                 }
             }) {
                 val compact = isCompactLayout(maxWidth, maxHeight)
+                // iPhone portrait: pages slide, fade or grow out of their cover (PageTransition.kt).
+                PageTransition.enabled = compact && AppPlatform.isIos
+                if (PageTransition.enabled) {
+                    PageTransition.layer = androidx.compose.ui.graphics.rememberGraphicsLayer()
+                    PageTransition.scope = rememberCoroutineScope()
+                }
                 androidx.compose.runtime.SideEffect {
+                    PageTransition.playerShown = playerDestination != null
                     ArtworkFlight.portrait = compact
                     SheetFlight.enabled = compact
                     TrackLinkLayout.compact = compact
@@ -2820,7 +2832,13 @@ internal fun RecordLabsWindow(
                         // iPhone: the page is recorded for the navigation's liquid glass.
                         val catalogBackdrop = rememberGlassBackdrop()
                         Box(Modifier.weight(1f).fillMaxHeight().progressiveHeaderBlur(compact = compact)) {
-                            Box(Modifier.fillMaxSize().glassBackdropSource(catalogBackdrop)) {
+                            Box(
+                                Modifier.fillMaxSize()
+                                    // Portrait: scrolling the page shrinks the dock, as on the other pages.
+                                    .then(if (compact) Modifier.nestedScroll(compactDockScroll) else Modifier)
+                                    .pageTransition(listOf("catalog", catalogDestination))
+                                    .glassBackdropSource(catalogBackdrop),
+                            ) {
                             CatalogPage(
                                 compact = compact,
                                 destination = catalogDestination!!,
@@ -2937,7 +2955,7 @@ internal fun RecordLabsWindow(
                             Box(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true)) {
                                 // iPhone: the page is recorded for the navigation's liquid glass.
                                 val profileBackdrop = rememberGlassBackdrop()
-                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp).glassBackdropSource(profileBackdrop)) {
+                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp).pageTransition(listOf("profile", profilePage, settingsSubpage)).glassBackdropSource(profileBackdrop)) {
                                     androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) { profileContent() }
                                 }
                                 CompactBottomBar(Modifier.align(Alignment.BottomCenter), profileBackdrop) {
@@ -3050,7 +3068,7 @@ homeLoading = homeLoading,
                         )
                         // iPhone: the page is recorded for the navigation's liquid glass.
                         val pageBackdrop = rememberGlassBackdrop()
-                        Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value }).glassBackdropSource(pageBackdrop)) {
+                        Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value }).pageTransition(listOf("main", section, libraryTarget.value)).glassBackdropSource(pageBackdrop)) {
                             androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) {
                             MainContent(section, compact = true, homeListState = homeListState, repository = repository, homeFeed = homeFeed, homeLoading = homeLoading, homeError = homeError, searchHistory = searchHistory, searchQuery = searchQuery, searchFilter = searchFilter, searchResults = searchResults, searchSubmitGeneration = searchSubmitGeneration, libraryTarget = libraryTarget, onLibraryNavigate = ::openLibrary, onLibraryBack = ::navigateBack, library = library, onCreatePlaylist = { name -> libraryStore.createPlaylist(name).also { if (it) library = libraryStore.snapshot() } }, onTrack = ::playTrack, onSearchTrack = ::playSearchTrack, onTrackMore = { trackMenuTarget = it }, onPlayNext = ::enqueueTrack, onOpenCatalog = ::openCatalogPage, onHomeItem = ::playHomeItem, onListenTogether = ::openListenTogether, onHomeRefresh = {
                                 scope.launch {
@@ -5877,7 +5895,7 @@ private fun HomeCard(item: HomeItem, width: Dp, sourceItems: List<HomeItem>, onT
             .longPressMenu(item.track?.let { track -> { onTrackMore(track) } })
             .clickable { onItemClick(item, sourceItems) },
     ) {
-        Artwork(item.artworkUrl, Modifier.size(width), RoundedCornerShape(16.dp))
+        Artwork(item.artworkUrl, Modifier.size(width).then(if (item.track == null) Modifier.pageZoomSource() else Modifier), RoundedCornerShape(16.dp))
         Spacer(Modifier.height(8.dp))
         if (item.track != null) TrackTitleText(item.track!!, color = Color.White, fontSize = 14.sp, maxLines = 1) else Text(item.title, color = Color.White, fontSize = 14.sp, maxLines = 1)
         if (item.track != null) ExplicitArtistText(item.track!!, item.subtitle, color = SecondaryText, fontSize = 12.sp) else Text(item.subtitle, color = SecondaryText, fontSize = 12.sp, maxLines = 1)
@@ -8011,7 +8029,7 @@ private fun CatalogPage(
                                 if (rawItem is com.recordlabs.desktop.data.CatalogItem) {
                                     val itemKind = catalogKindFor(rawItem.browseId) { if (rawItem.subtitle.contains("Playlist", true)) "Playlist" else if (rawItem.subtitle.contains("Artist", true) || rawItem.browseId.startsWith("UC")) "Artist" else "Album" }
                                     Column(Modifier.width(cardWidth).clickable { onOpenCatalog(rawItem.title, itemKind, rawItem.browseId, null, null) }) {
-                                        Artwork(rawItem.artworkUrl, Modifier.size(cardWidth), RoundedCornerShape(12.dp))
+                                        Artwork(rawItem.artworkUrl, Modifier.size(cardWidth).pageZoomSource(), RoundedCornerShape(12.dp))
                                         Text(rawItem.title, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 2, modifier = Modifier.padding(top = 8.dp))
                                         Text(rawItem.subtitle, color = SecondaryText, fontSize = 12.sp, maxLines = 1)
                                     }
