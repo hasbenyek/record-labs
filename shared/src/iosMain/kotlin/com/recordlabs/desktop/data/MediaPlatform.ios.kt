@@ -76,20 +76,43 @@ actual object MediaPlatform {
     actual fun align(song: ShortArray, video: ShortArray): List<CounterpartSegment>? = null
     actual fun decodeWebmOpus(data: ByteArray): ShortArray = ShortArray(0)
 
-    /** iPhone: AVPlayer reads the picture stream straight from YouTube (with its User-Agent). */
+    /**
+     * iPhone: AVPlayer reads the picture stream straight from YouTube (with its User-Agent),
+     * as HLS pieces when its index is in [head] (as the songs: see [StreamIndex]). Given the
+     * whole file, AVPlayer read on through it at YouTube's slow pace before it showed
+     * anything: the picture took 8 s or more, or never came.
+     */
     actual fun openMusicVideoStream(
         videoId: String, remoteUrl: String, userAgent: String, contentLength: Long, head: ByteArray,
         width: Int, height: Int, quality: Int,
-    ): Any? = IosMusicVideoStream(remoteUrl, userAgent)
+    ): Any? = IosMusicVideoStream(remoteUrl, userAgent, videoIndexPlaylist(remoteUrl, head))
     actual fun musicVideoStreamUrl(stream: Any): String {
         val video = stream as IosMusicVideoStream
         IosStreamHeaders.remember(video.url, video.userAgent)
+        video.playlist?.let { IosStreamHeaders.rememberPlaylist(video.url, it) }
         return video.url
     }
+
+    /** The HLS playlist of a fragmented MP4 from its start ([head]: header boxes and the sidx index). */
+    private fun videoIndexPlaylist(url: String, head: ByteArray): String? = runCatching {
+        var at = 0
+        while (at + 8 <= head.size) {
+            val size = ((head[at].toLong() and 0xff) shl 24) or ((head[at + 1].toLong() and 0xff) shl 16) or
+                ((head[at + 2].toLong() and 0xff) shl 8) or (head[at + 3].toLong() and 0xff)
+            val type = head.decodeToString(at + 4, at + 8)
+            if (type == "sidx") {
+                // Everything before the index is the header (ftyp, moov).
+                return@runCatching StreamIndex.playlist(url, (at - 1).toLong(), at.toLong(), head.copyOfRange(at, head.size))
+            }
+            if (size < 8L || size > Int.MAX_VALUE) return@runCatching null
+            at += size.toInt()
+        }
+        null
+    }.getOrNull()
 }
 
-/** A music video's picture stream on the iPhone: its address and the User-Agent it was made for. */
-class IosMusicVideoStream(val url: String, val userAgent: String)
+/** A music video's picture stream on the iPhone: its address, the User-Agent it was made for, its HLS pieces. */
+class IosMusicVideoStream(val url: String, val userAgent: String, val playlist: String? = null)
 
 /** The User-Agent each stream URL was made for (AVPlayer sends it). */
 object IosStreamHeaders {
@@ -99,4 +122,12 @@ object IosStreamHeaders {
         agents[url] = userAgent
     }
     fun userAgentFor(url: String): String? = com.recordlabs.desktop.platform.locked(agents) { agents[url] }
+
+    /** Music videos' picture streams as HLS pieces (see openMusicVideoStream). */
+    private val playlists = HashMap<String, String>()
+    fun rememberPlaylist(url: String, playlist: String) = com.recordlabs.desktop.platform.locked(playlists) {
+        if (playlists.size > 32) playlists.clear()
+        playlists[url] = playlist
+    }
+    fun playlistFor(url: String): String? = com.recordlabs.desktop.platform.locked(playlists) { playlists[url] }
 }

@@ -57,6 +57,8 @@ import platform.AVFoundation.AVQueuePlayer
 import platform.AVFoundation.AVURLAsset
 import platform.AVFoundation.addOutput
 import platform.AVFoundation.allowsExternalPlayback
+import platform.AVFoundation.automaticallyWaitsToMinimizeStalling
+import platform.AVFoundation.reasonForWaitingToPlay
 import platform.AVFoundation.currentItem
 import platform.AVFoundation.currentTime
 import platform.AVFoundation.pause
@@ -134,8 +136,12 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
         val options: Map<Any?, Any?>? = userAgent?.let {
             mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to it))
         }
+        // A music video's picture stream as HLS pieces when its index was read.
+        val pieces = IosStreamHeaders.playlistFor(url)
+        if (pieces != null) log("as HLS pieces (${pieces.lineSequence().count { it.startsWith("#EXTINF") }})")
         fun newItem(): AVPlayerItem {
-            val asset = AVURLAsset(uRL = link!!, options = options)
+            val asset = pieces?.let { com.recordlabs.desktop.data.sharedIndexPlaylists.asset(url, it, options) }
+                ?: AVURLAsset(uRL = link!!, options = options)
             return AVPlayerItem(asset = asset).apply {
                 // Sharp enough for the artwork's box, light on decoding and copying.
                 preferredMaximumResolution = CGSizeMake(maxSide, maxSide)
@@ -157,6 +163,9 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
             player = AVPlayer(playerItem = item)
         }
         player.muted = true
+        // Plays as soon as there is a picture, rather than waiting for a long buffer (a
+        // stall is picked up again below).
+        player.automaticallyWaitsToMinimizeStalling = false
         player.allowsExternalPlayback = false
         player.preventsDisplaySleepDuringVideoPlayback = false
         attachOutputs()
@@ -182,12 +191,33 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
         }
     }
 
-    fun play() = player.play()
-    fun pause() = player.pause()
+    /** Whether it should be playing (a stalled player is started again: see [pull]). */
+    private var wantsPlay = false
+    private var lastKickAt = 0.0
+
+    fun play() {
+        wantsPlay = true
+        player.play()
+    }
+    fun pause() {
+        wantsPlay = false
+        player.pause()
+    }
+
+    /** The video is loaded (seeks before this only held it back). */
+    val ready: Boolean get() = player.currentItem?.status == AVPlayerItemStatusReadyToPlay
+
+    // How it is going, for the diagnostics (a few times after the first picture).
+    private var picturesSinceLog = 0
+    private var lastHealthAt = 0.0
+    private var healthLogs = 0
 
     var rate: Float
         get() = player.rate
-        set(value) { player.rate = value }
+        set(value) {
+            wantsPlay = value > 0f
+            player.rate = value
+        }
 
     val positionMs: Long
         get() = (CMTimeGetSeconds(player.currentTime()) * 1000.0).takeIf { !it.isNaN() }?.toLong() ?: 0L
@@ -221,6 +251,21 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
             )
         }
         if (item == null) return
+        // Stalled (it stops by itself when the pictures run out): start it again.
+        if (wantsPlay && player.rate == 0f && item.status == AVPlayerItemStatusReadyToPlay && now - lastKickAt > 1.0) {
+            lastKickAt = now
+            player.play()
+        }
+        if (pictureShown && healthLogs < 4 && now - lastHealthAt > 6.0) {
+            lastHealthAt = now
+            healthLogs++
+            log(
+                "$picturesSinceLog new pictures in 6 s, at ${positionMs / 1000.0} s, playing ${player.timeControlStatus}" +
+                    (player.reasonForWaitingToPlay?.let { " ($it)" } ?: "") + ", rate ${player.rate}, wants ${if (wantsPlay) "play" else "pause"}" +
+                    (looper?.let { ", looper ${it.status}${it.error?.localizedDescription?.let { e -> " $e" } ?: ""}, loop ${it.loopCount}" } ?: ""),
+            )
+            picturesSinceLog = 0
+        }
         if (outputs.none { it.first == item }) attachOutputs()
         // HLS: an output added before the item was ready can stay empty for good; a fresh
         // one is added once it is ready and still shows nothing (twice at most).
@@ -259,6 +304,7 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
                 rowBytes,
             )
             frame = image.toComposeImageBitmap()
+            picturesSinceLog++
             recent.addLast(image)
             while (recent.size > 3) recent.removeFirst().close()
             if (aspect == null) aspect = width.toFloat() / height
@@ -522,19 +568,28 @@ internal fun IosMusicVideo(
                     val engine = createPlaybackEngine()
                     var waited = 0L
                     var started = false
+                    var lastSeekAt = 0L
                     while (isActive) {
                         // The page's video rests while the same video plays full screen.
                         val coveredByFullscreen = !fullscreen && MusicVideoFullscreen.trackId == track.id
                         val playing = engine.isPlaying && engine.currentTrack?.id == track.id && MainWindowActivity.shownNow && !coveredByFullscreen
                         val audioMs = engine.positionMs
-                        if (!started) {
+                        // Seeks only once it is loaded, and not again before the last one has
+                        // had time (a seek every moment while it loaded kept it from playing).
+                        if (!started && frames.ready) {
                             frames.seekTo(audioMs)
+                            lastSeekAt = currentTimeMillis()
                             started = true
                         }
                         if (playing) {
                             val drift = frames.positionMs - audioMs
                             var speed = 1f
-                            if (abs(drift) > MUSIC_VIDEO_MAX_DRIFT_MS) frames.seekTo(audioMs)
+                            if (abs(drift) > MUSIC_VIDEO_MAX_DRIFT_MS) {
+                                if (started && currentTimeMillis() - lastSeekAt > 3_000L) {
+                                    frames.seekTo(audioMs + 300L)
+                                    lastSeekAt = currentTimeMillis()
+                                }
+                            }
                             else if (abs(drift) > 80L) speed = (1f - drift / 1000f * 0.5f).coerceIn(0.85f, 1.15f)
                             if (abs(frames.rate - speed) > 0.01f) frames.rate = speed
                         } else if (frames.rate != 0f) {

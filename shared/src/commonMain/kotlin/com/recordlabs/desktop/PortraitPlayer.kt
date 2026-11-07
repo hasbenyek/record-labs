@@ -60,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
@@ -419,10 +420,16 @@ internal fun PortraitBottomBar(
         }
     }
     val remote = ConnectOutput.remoteName.takeIf { AppPlatform.isIos }
+    // The line hangs below the buttons in the room above the home indicator: it takes no
+    // height, so the page above does not move up while another device plays.
     androidx.compose.animation.AnimatedVisibility(
         visible = remote != null,
-        enter = androidx.compose.animation.fadeIn(tween(220)) + androidx.compose.animation.expandVertically(tween(220)),
-        exit = androidx.compose.animation.fadeOut(tween(180)) + androidx.compose.animation.shrinkVertically(tween(180)),
+        enter = androidx.compose.animation.fadeIn(tween(220)),
+        exit = androidx.compose.animation.fadeOut(tween(180)),
+        modifier = Modifier.fillMaxWidth().layout { measurable, constraints ->
+            val placeable = measurable.measure(constraints.copy(minHeight = 0, maxHeight = androidx.compose.ui.unit.Constraints.Infinity))
+            layout(placeable.width, 0) { placeable.place(0, 0) }
+        },
     ) {
         Text(
             "${AppPlatform.deviceName.ifBlank { "iPhone" }} → ${remote.orEmpty()}",

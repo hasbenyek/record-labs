@@ -3189,6 +3189,14 @@ homeLoading = homeLoading,
                             androidx.compose.animation.slideOutVertically(androidx.compose.animation.core.tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing)) { it },
 
                         modifier = Modifier.fillMaxSize().sheetCard()
+                            // Portrait: a touch on an empty part of the player stays there. The page
+                            // under it is only hidden (still laid out), and its dock's pause and next
+                            // buttons under the empty bottom of the player took those touches.
+                            .then(
+                                if (compact) Modifier.pointerInput(Unit) {
+                                    awaitPointerEventScope { while (true) awaitPointerEvent(PointerEventPass.Final) }
+                                } else Modifier,
+                            )
 
                     ) {
 
@@ -4498,9 +4506,13 @@ private fun DockGlass(shape: androidx.compose.ui.graphics.Shape, modifier: Modif
                 if (press != null) Modifier.glassShadow(shape, spread = 12.dp, strength = 0.14f)
                 else Modifier.shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .6f)),
             )
+            // iPhone: the glass is drawn before the clip (the glass shapes itself). Under a
+            // clip Skia gives the glass only the page inside the shape, and the rim, which
+            // bends in what lies just outside it, showed black there instead.
+            .then(if (backdrop != null) Modifier.liquidGlassBackground(backdrop, press) else Modifier)
             .clip(shape)
             .then(
-                if (backdrop != null) Modifier.liquidGlassBackground(backdrop, press)
+                if (backdrop != null) Modifier
                 else Modifier
                     .background(HeaderGlass)
                     .background(Brush.verticalGradient(0f to Color.White.copy(alpha = .10f), 0.5f to Color.Transparent))
@@ -4746,12 +4758,12 @@ internal fun CompactHeader(
                     textFieldValue = value
                     if (value.text != query) onQueryChange(value.text)
                 },
-                modifier = Modifier.weight(1f).clip(RoundedCornerShape(50))
-                    // iPhone: liquid glass like the dock; elsewhere the glass edge as before.
-                    .then(
-                        if (glassBackdrop != null) Modifier.liquidGlassBackground(glassBackdrop)
-                        else Modifier.border(1.dp, HeaderGlassBorder, RoundedCornerShape(50)),
-                    )
+                modifier = Modifier.weight(1f)
+                    // iPhone: liquid glass like the dock (drawn before the clip: see DockGlass);
+                    // elsewhere the glass edge as before.
+                    .then(if (glassBackdrop != null) Modifier.liquidGlassBackground(glassBackdrop) else Modifier)
+                    .clip(RoundedCornerShape(50))
+                    .then(if (glassBackdrop != null) Modifier else Modifier.border(1.dp, HeaderGlassBorder, RoundedCornerShape(50)))
                     .trackTextInputFocus()
                     .onFocusChanged { onFocus(it.isFocused) }
                     .onGloballyPositioned {
@@ -11878,8 +11890,11 @@ private fun TimedLyricText(
                         if (floatingWords != null) androidx.compose.ui.graphics.TileMode.Decal else androidx.compose.ui.graphics.TileMode.Clamp,
                     )
                 } else null
-                shape = androidx.compose.ui.graphics.RectangleShape
-                clip = floatingWords == null
+                // Cut only for the blur (to keep it within the line), and with room around
+                // the line: cut at its edge it took off the bottom of letters like g, y, ?
+                // on the last row (a dim line looked cut where the lit one did not).
+                shape = LyricBlurClipShape(6.dp.toPx())
+                clip = floatingWords == null && blurPx > 0f
             }
             .graphicsLayer {
                 alpha = renderedAlpha
@@ -13207,50 +13222,15 @@ fun TrackTitleText(
     )
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+/** The rectangle of a lyric line with [pad] px more on every side (see TimedLyricText). */
+private class LyricBlurClipShape(private val pad: Float) : androidx.compose.ui.graphics.Shape {
+    override fun createOutline(
+        size: androidx.compose.ui.geometry.Size,
+        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+        density: androidx.compose.ui.unit.Density,
+    ): androidx.compose.ui.graphics.Outline = androidx.compose.ui.graphics.Outline.Rectangle(
+        androidx.compose.ui.geometry.Rect(-pad, -pad, size.width + pad, size.height + pad),
+    )
+    override fun equals(other: Any?): Boolean = other is LyricBlurClipShape && other.pad == pad
+    override fun hashCode(): Int = pad.hashCode()
+}

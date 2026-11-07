@@ -269,12 +269,13 @@ internal fun IosMenuDialog(
                         if (glassBackdrop != null) Modifier.glassShadow(style.shape, spread = if (dense) 10.dp else 18.dp, strength = 0.28f, drop = 3.dp)
                         else Modifier.shadow(if (dense) 14.dp else 28.dp, style.shape, ambientColor = Color.Black.copy(alpha = 0.4f), spotColor = Color.Black.copy(alpha = 0.5f)),
                     )
-                    .clip(style.shape)
                     // iPhone: liquid glass over the app (frosted, so the rows read over
-                    // anything); elsewhere the solid card as before.
+                    // anything), drawn before the clip (see DockGlass in Main.kt); elsewhere
+                    // the solid card as before.
+                    .then(if (glassBackdrop != null) Modifier.liquidGlassBackground(glassBackdrop, cornerRadius = style.radius, frosted = true) else Modifier)
+                    .clip(style.shape)
                     .then(
                         if (glassBackdrop != null) Modifier
-                            .liquidGlassBackground(glassBackdrop, cornerRadius = style.radius, frosted = true)
                             .border(0.6.dp, Color.White.copy(alpha = 0.16f), style.shape)
                         else Modifier
                             .background(style.card)

@@ -98,8 +98,9 @@ internal fun Modifier.liquidGlassPanel(radius: Dp, elevation: Dp = 40.dp): Modif
     val backdrop = LocalAppBackdrop.current ?: return liquidGlass(shape, elevation)
     return this
         .glassShadow(shape, spread = elevation * 0.6f, strength = 0.30f, drop = 4.dp)
-        .clip(shape)
+        // The glass before the clip (see DockGlass in Main.kt).
         .liquidGlassBackground(backdrop, cornerRadius = radius, frosted = true)
+        .clip(shape)
         .drawBehind {
             drawRect(Brush.verticalGradient(0f to Color.White.copy(alpha = .06f), .35f to Color.Transparent))
         }
