@@ -25,6 +25,7 @@ import platform.AVFoundation.AVPlayerTimeControlStatusPlaying
 import platform.AVFoundation.AVURLAsset
 import platform.AVFoundation.AVAudioTimePitchAlgorithmSpectral
 import platform.AVFoundation.audioTimePitchAlgorithm
+import platform.AVFoundation.automaticallyWaitsToMinimizeStalling
 import platform.AVFoundation.currentItem
 import platform.AVFoundation.currentTime
 import platform.AVFoundation.duration
@@ -131,6 +132,10 @@ private class IosPlaybackEngine : PlaybackEngine {
             }
             publish()
         }
+        // Starts as soon as there is something to play, instead of waiting until AVPlayer
+        // thinks a stall-free start is sure (seconds on YouTube's streams). A start
+        // that runs dry is resumed by tick() once data is there.
+        player.automaticallyWaitsToMinimizeStalling = false
         // Position updates a few times a second, like the Android and desktop players.
         NSTimer.scheduledTimerWithTimeInterval(0.25, repeats = true) { _ -> tick() }
     }
@@ -173,14 +178,21 @@ private class IosPlaybackEngine : PlaybackEngine {
             AppDiagnostics.log("playback", "\"${currentTrack?.title}\": $lastError")
             wantsPlay = false
         }
+        // A start (or a song) that ran dry stops AVPlayer (it no longer waits by itself):
+        // play on as soon as it can.
+        if (wantsPlay && lastError == null && item.status == AVPlayerItemStatusReadyToPlay && player.rate == 0f) {
+            startPlayer()
+        }
         publish()
         // AVPlayer took the stream for much longer than the song (a fragmented MP4 whose
         // length it guessed): past the song's real end there is only silence up to the
         // guess, so the song ends there.
         val track = currentTrack ?: return
-        val known = track.durationMs
+        val streamLength = StreamLengths.of(track.id)
+        val known = streamLength ?: track.durationMs
+        val longer = if (streamLength != null) known * 115 / 100 else known * 13 / 10
         if (wantsPlay && known > 0L && endedEarlyFor != track.id &&
-            playerLengthMs > known * 13 / 10 && positionMs >= known + 1_000L
+            playerLengthMs > longer && positionMs >= known + 800L
         ) {
             endedEarlyFor = track.id
             AppDiagnostics.log("playback", "\"${track.title}\": ended at its real length ${known / 1000} s (AVPlayer said ${playerLengthMs / 1000} s)")
@@ -206,8 +218,11 @@ private class IosPlaybackEngine : PlaybackEngine {
         val length = item?.let { seconds(it.duration) }
         val playerLength = length?.takeIf { !it.isNaN() && !it.isInfinite() && it > 0.0 }?.let { (it * 1000).toLong() }
         playerLengthMs = playerLength ?: 0L
-        val known = currentTrack?.durationMs?.takeIf { it > 0L }
+        // The real length YouTube gave with the stream; the song's own length otherwise.
+        val streamLength = currentTrack?.id?.let(StreamLengths::of)
+        val known = streamLength ?: currentTrack?.durationMs?.takeIf { it > 0L }
         durationMs = when {
+            streamLength != null -> streamLength
             playerLength == null -> known ?: 0L
             // AVPlayer's own length far from the song's real one (a guessed length of a
             // fragmented stream, often double): the song's length. A music video's own

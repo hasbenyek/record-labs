@@ -1743,9 +1743,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         // Android: the player resolves and streams the song itself (original Android app engine).
         StreamHooks.streamUri?.let { return it(track.id) }
 
-        // iPhone: YouTube's own iPhone HLS audio first (see iosHlsAudio).
-        if (AppPlatform.isIos && track.id !in iosHlsFailed) {
-            iosHlsAudio(track.id)?.let { return MediaPlatform.playerUrl(it.url, it.userAgent) }
+        // iPhone: YouTube's own iPhone HLS audio and the MP4 race at the same time, the
+        // first found plays (asking for HLS first, then the race, made every song wait).
+        if (AppPlatform.isIos) {
+            val first = iosFirstStream(track.id) ?: return null
+            return MediaPlatform.playerUrl(first.url, first.userAgent)
         }
 
         // resolveStream returns the 10-minute cached URL without new probes
@@ -2291,6 +2293,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             AppDiagnostics.log("playback", "$videoId: no iPhone player answer")
             return null
         }
+        StreamLengths.record(
+            videoId,
+            (streaming["adaptiveFormats"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+                .firstNotNullOfOrNull { it["approxDurationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() },
+        )
         val master = streaming["hlsManifestUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") } ?: run {
             AppDiagnostics.log("playback", "$videoId: no HLS in the iPhone answer")
             return null
@@ -2325,6 +2332,28 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             if (stream != null) iosHlsCache[videoId] = stream
             AppDiagnostics.log("playback", "$videoId: HLS audio ${if (stream != null) "ready" else "not available"} (${currentTimeMillis() - started} ms)")
         }
+    }
+
+    /**
+     * iPhone: HLS audio (unless it failed for this song) and the MP4 race at once; the
+     * first found. Both run in the resolver's own scope: the slower one is not waited
+     * for (its blocking requests finish in the background, and its result is cached).
+     */
+    private suspend fun iosFirstStream(videoId: String): CachedStream? {
+        val started = currentTimeMillis()
+        val result = CompletableDeferred<Pair<String, CachedStream>?>()
+        val hls = if (videoId !in iosHlsFailed) streamResolveScope.async { runCatching { iosHlsAudio(videoId) }.getOrNull() } else null
+        val mp4 = streamResolveScope.async { runCatching { resolveStream(videoId, allowSlowFallback = true, reason = "play") }.getOrNull() }
+        if (hls != null) streamResolveScope.launch { hls.await()?.let { result.complete("HLS" to it) } }
+        streamResolveScope.launch { mp4.await()?.let { result.complete("MP4" to it) } }
+        streamResolveScope.launch {
+            runCatching { hls?.await() }
+            runCatching { mp4.await() }
+            result.complete(null)
+        }
+        val chosen = result.await()
+        AppDiagnostics.log("playback", "$videoId: ${chosen?.first ?: "no stream"} after ${currentTimeMillis() - started} ms")
+        return chosen?.second
     }
 
     /**
@@ -2435,6 +2464,12 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                     if (AppSettings.audioQuality.value == "low") -bitrate else bitrate
                 },
             ).firstOrNull() ?: return@runCatching null
+        // The song's real length, as YouTube gives it (see StreamLengths).
+        StreamLengths.record(
+            videoId,
+            bestFormat["approxDurationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                ?: (response["videoDetails"] as? JsonObject)?.get("lengthSeconds")?.jsonPrimitive?.contentOrNull?.toLongOrNull()?.times(1000),
+        )
 
         val url = bestFormat["url"]?.jsonPrimitive?.contentOrNull
         // Direct URLs from clients that never use player.js are already playable.

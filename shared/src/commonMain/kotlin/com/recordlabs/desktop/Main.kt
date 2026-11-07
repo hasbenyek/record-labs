@@ -810,7 +810,11 @@ internal fun RecordLabsWindow(
                         playbackPositionMs = newPos
                     }
                     val realDuration = nativePlayback.durationMs
-                    if (realDuration > 0L && currentTrack?.durationMs != realDuration) {
+                    // iPhone: only a length YouTube gave with the stream is kept with the song
+                    // (AVPlayer's own guess was saved into the history and last playback).
+                    val trustedLength = !AppPlatform.isIos ||
+                        currentTrack?.id?.let(com.recordlabs.desktop.data.StreamLengths::of) == realDuration
+                    if (realDuration > 0L && currentTrack?.durationMs != realDuration && trustedLength) {
                         currentTrack = currentTrack?.copy(durationMs = realDuration)
                     }
                     playbackDurationMs = realDuration.takeIf { it > 0L && (!playbackLoading || it != 180_000L) }
@@ -1062,6 +1066,9 @@ internal fun RecordLabsWindow(
             playbackLoading = true
             playbackPositionMs = 0L
             playbackDurationMs = track.durationMs.takeIf { !playbackLoading || it != 180_000L } ?: 0L
+            // iPhone: the real length, when this song's stream was already found (the time
+            // left shows from the start).
+            if (AppPlatform.isIos) com.recordlabs.desktop.data.StreamLengths.of(track.id)?.let { playbackDurationMs = it }
             playbackNotice = null
             if (notifyRoom) {
                 WindowsListenTogetherClient.broadcastPlayback(
@@ -1082,7 +1089,21 @@ internal fun RecordLabsWindow(
                 }
                 if (requestId != playbackRequestId) return@launch
                 if (rawUrl != null) {
+                    // iPhone: the real length came with the stream: shown before the sound starts.
+                    if (AppPlatform.isIos) com.recordlabs.desktop.data.StreamLengths.of(track.id)?.let { length ->
+                        playbackDurationMs = length
+                        if (currentTrack?.id == track.id) currentTrack = currentTrack?.copy(durationMs = length)
+                    }
                     mediaPlayer.play(track, rawUrl)
+                    // iPhone: the next song's stream is found while this one plays, so it starts
+                    // at once (search results are warmed the same way).
+                    if (AppPlatform.isIos) scope.launch {
+                        delay(4_000L)
+                        if (requestId != playbackRequestId) return@launch
+                        playbackQueue.getOrNull(playbackQueueIndex + 1)
+                            ?.takeIf { it.id != track.id && it.localPath.isNullOrBlank() }
+                            ?.let { next -> runCatching { repository.warmStream(next) } }
+                    }
                     // iPhone: a stream that does not start, stops, or stands still while it
                     // should play gets another source (from where it was), twice at most.
                     if (AppPlatform.isIos) {
@@ -9733,7 +9754,8 @@ internal fun LyricsPage(
                     },
                 ) {
                     androidx.compose.animation.Crossfade(isQueueVisible, animationSpec = tween(260), label = "lyrics-portrait-queue") { queueOpen ->
-                        Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = 52.dp, bottom = if (shortPortrait) 12.dp else 30.dp)) {
+                        // iPhone: a little higher (the status bar's room is already kept above).
+                        Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = if (AppPlatform.isIos) 40.dp else 52.dp, bottom = if (shortPortrait) 12.dp else 30.dp)) {
                             if (queueOpen) {
                                 PortraitQueuePanel(
                                     track = track,
