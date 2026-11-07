@@ -1743,6 +1743,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         // Android: the player resolves and streams the song itself (original Android app engine).
         StreamHooks.streamUri?.let { return it(track.id) }
 
+        // iPhone: YouTube's own iPhone HLS audio first (see iosHlsAudio).
+        if (AppPlatform.isIos && track.id !in iosHlsFailed) {
+            iosHlsAudio(track.id)?.let { return MediaPlatform.playerUrl(it.url, it.userAgent) }
+        }
+
         // resolveStream returns the 10-minute cached URL without new probes
         // (it was verified when first resolved), joins a resolution that is
         // already running for this id, or starts the source race.
@@ -2219,15 +2224,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         MediaPlatform.openMusicVideoStream(videoId, format.url, format.userAgent, format.contentLength, head, format.width, format.height, format.quality)
     }.getOrNull()
 
-    /**
-     * iPhone: the music video as YouTube's own iPhone app gets it, best first: its HLS
-     * playlist, then a plain MP4 with picture and sound (up to 720p). The app shows the
-     * picture muted. Each with the User-Agent it is meant for; empty when there is none.
-     */
-    suspend fun musicVideoIosStreams(videoId: String): List<Pair<String, String>> = withContext(IoDispatcher) {
-        val client = PLAYBACK_CLIENTS.firstOrNull { it.name == "IOS" } ?: return@withContext emptyList()
+    /** iPhone: YouTube's own iPhone app's player answer for [videoId] (its streamingData). */
+    private suspend fun iosStreamingData(videoId: String): Pair<JsonObject, String>? = withContext(IoDispatcher) {
+        val client = PLAYBACK_CLIENTS.firstOrNull { it.name == "IOS" } ?: return@withContext null
         runCatching {
-            val visitorData = playbackVisitorData() ?: return@runCatching emptyList()
+            val visitorData = playbackVisitorData() ?: return@runCatching null
             val extras = client.contextExtras.takeIf { it.isNotBlank() }?.let { ",$it" }.orEmpty()
             val bodyStr = """{"context":{"client":{"clientName":"${client.name}","clientVersion":"${client.version}","hl":"en","gl":"US"$extras,"visitorData":${JsonPrimitive(visitorData)}}},"videoId":"$videoId","contentCheckOk":true,"racyCheckOk":true}"""
             val request = OkRequest.Builder()
@@ -2243,24 +2244,102 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 .header("Referer", "https://music.youtube.com/")
                 .post(bodyStr.toOkBody("application/json"))
                 .build()
-            val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching emptyList()
+            val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching null
             val streaming = Json.parseToJsonElement(responseStr).jsonObject["streamingData"] as? JsonObject
-                ?: return@runCatching emptyList()
-            val hls = streaming["hlsManifestUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") }
-            // Formats with picture and sound together (no separate audio): a plain MP4.
-            val muxed = (streaming["formats"] as? JsonArray).orEmpty()
-                .mapNotNull { it as? JsonObject }
-                .filter { it["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty().startsWith("video/mp4") }
-                .mapNotNull { format ->
-                    val url = format["url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") } ?: return@mapNotNull null
-                    val height = format["height"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
-                    height to url
+                ?: return@runCatching null
+            streaming to client.userAgent
+        }.getOrNull()
+    }
+
+    /**
+     * iPhone: the music video as YouTube's own iPhone app gets it, best first: its HLS
+     * playlist, then a plain MP4 with picture and sound (up to 720p). The app shows the
+     * picture muted. Each with the User-Agent it is meant for; empty when there is none.
+     */
+    suspend fun musicVideoIosStreams(videoId: String): List<Pair<String, String>> {
+        val (streaming, userAgent) = iosStreamingData(videoId) ?: return emptyList()
+        val hls = streaming["hlsManifestUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") }
+        // Formats with picture and sound together (no separate audio): a plain MP4.
+        val muxed = (streaming["formats"] as? JsonArray).orEmpty()
+            .mapNotNull { it as? JsonObject }
+            .filter { it["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty().startsWith("video/mp4") }
+            .mapNotNull { format ->
+                val url = format["url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") } ?: return@mapNotNull null
+                val height = format["height"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                height to url
+            }
+            .filter { it.first <= 720 }
+            .maxByOrNull { it.first }
+            ?.second
+        return listOfNotNull(hls, muxed).map { it to userAgent }
+    }
+
+    /** iPhone: songs whose HLS audio did not play (the MP4 streams are used for them). */
+    private val iosHlsFailed = LockedSet<String>()
+    private val iosHlsCache = concurrentMapOf<String, CachedStream>()
+
+    /**
+     * iPhone: the song's sound as YouTube's own iPhone app plays it, an HLS audio-only
+     * playlist. AVPlayer plays it natively and knows its exact length. The MP4 streams
+     * the other clients give are fragmented: AVPlayer guesses their length (a 3 minute
+     * song shown as 6, then silence up to the guess) and fails to start some of them.
+     */
+    private suspend fun iosHlsAudio(videoId: String): CachedStream? {
+        iosHlsCache[videoId]?.takeIf { it.validUntilMs > currentTimeMillis() }?.let { return it }
+        val started = currentTimeMillis()
+        val (streaming, userAgent) = iosStreamingData(videoId) ?: run {
+            AppDiagnostics.log("playback", "$videoId: no iPhone player answer")
+            return null
+        }
+        val master = streaming["hlsManifestUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") } ?: run {
+            AppDiagnostics.log("playback", "$videoId: no HLS in the iPhone answer")
+            return null
+        }
+        return withContext(IoDispatcher) {
+            runCatching {
+                fun get(url: String): String? {
+                    val request = OkRequest.Builder().url(url).header("User-Agent", userAgent).build()
+                    return httpClient.newCall(request).execute().use { response ->
+                        if (response.code in 200..299) response.body?.string() else null
+                    }
                 }
-                .filter { it.first <= 720 }
-                .maxByOrNull { it.first }
-                ?.second
-            listOfNotNull(hls, muxed).map { it to client.userAgent }
-        }.getOrDefault(emptyList())
+                val playlist = get(master) ?: return@runCatching null
+                // #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="234",...,URI="..." (233 is the small one).
+                val audio = playlist.lineSequence()
+                    .filter { it.startsWith("#EXT-X-MEDIA:") && it.contains("TYPE=AUDIO") }
+                    .mapNotNull { line ->
+                        val uri = Regex("URI=\"([^\"]+)\"").find(line)?.groupValues?.get(1) ?: return@mapNotNull null
+                        val group = Regex("GROUP-ID=\"([^\"]+)\"").find(line)?.groupValues?.get(1).orEmpty()
+                        group to resolveUrl(master, uri)
+                    }
+                    .toList()
+                val low = AppSettings.audioQuality.value == "low"
+                val chosen = audio.firstOrNull { it.first == (if (low) "233" else "234") }
+                    ?: audio.maxByOrNull { it.first.toIntOrNull() ?: 0 }
+                    ?: return@runCatching null
+                val media = get(chosen.second) ?: return@runCatching null
+                if (!media.startsWith("#EXTM3U") || !media.contains("#EXTINF")) return@runCatching null
+                CachedStream(chosen.second, userAgent, currentTimeMillis() + 10 * 60_000L)
+            }.getOrNull()
+        }.also { stream ->
+            if (stream != null) iosHlsCache[videoId] = stream
+            AppDiagnostics.log("playback", "$videoId: HLS audio ${if (stream != null) "ready" else "not available"} (${currentTimeMillis() - started} ms)")
+        }
+    }
+
+    /**
+     * iPhone: [url] did not play (failed, or nothing after a while): the next song request
+     * gets another source (HLS, then a fresh MP4 race).
+     */
+    fun reportPlaybackFailure(videoId: String, url: String) {
+        val hls = iosHlsCache[videoId]
+        if (hls != null && hls.url == url) {
+            iosHlsFailed.add(videoId)
+            iosHlsCache.remove(videoId)
+        } else {
+            streamCache.remove(videoId)
+        }
+        AppDiagnostics.log("playback", "$videoId: ${if (hls?.url == url) "HLS audio" else "MP4 stream"} did not play, trying another source")
     }
 
     fun invalidateMusicVideo(videoId: String) {
@@ -2346,6 +2425,10 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 compareByDescending<JsonObject> {
                     // AVPlayer (iPhone) plays AAC (audio/mp4), not Opus in WebM.
                     it["mimeType"]?.jsonPrimitive?.contentOrNull?.startsWith(if (AppPlatform.isIos) "audio/mp4" else "audio/webm") == true
+                }.thenByDescending {
+                    // iPhone: plain AAC before HE-AAC (mp4a.40.5): AVPlayer reads an HE-AAC
+                    // stream's length as double. (Elsewhere every format is equal here.)
+                    AppPlatform.isIos && it["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty().contains("mp4a.40.2")
                 }.thenByDescending {
                     val bitrate = it["bitrate"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
                     // Settings > Player > Audio quality "Low": the smallest stream first.

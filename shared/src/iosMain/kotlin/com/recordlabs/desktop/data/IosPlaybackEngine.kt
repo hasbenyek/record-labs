@@ -170,12 +170,32 @@ private class IosPlaybackEngine : PlaybackEngine {
         val item = player.currentItem ?: return
         if (item.status == AVPlayerItemStatusFailed && lastError == null) {
             lastError = "Playback failed (${item.error?.localizedDescription ?: "unknown error"})"
+            AppDiagnostics.log("playback", "\"${currentTrack?.title}\": $lastError")
             wantsPlay = false
         }
         publish()
+        // AVPlayer took the stream for much longer than the song (a fragmented MP4 whose
+        // length it guessed): past the song's real end there is only silence up to the
+        // guess, so the song ends there.
+        val track = currentTrack ?: return
+        val known = track.durationMs
+        if (wantsPlay && known > 0L && endedEarlyFor != track.id &&
+            playerLengthMs > known * 13 / 10 && positionMs >= known + 1_000L
+        ) {
+            endedEarlyFor = track.id
+            AppDiagnostics.log("playback", "\"${track.title}\": ended at its real length ${known / 1000} s (AVPlayer said ${playerLengthMs / 1000} s)")
+            wantsPlay = false
+            player.pause()
+            publish()
+            onPlaybackEnded?.invoke()
+        }
     }
 
     private var loggedLengthFor: String? = null
+    /** AVPlayer's own idea of the song's length (ms; 0 = unknown). */
+    private var playerLengthMs = 0L
+    /** The song ended at its real length (see [tick]). */
+    private var endedEarlyFor: String? = null
 
     private fun publish() {
         val item = player.currentItem
@@ -185,6 +205,7 @@ private class IosPlaybackEngine : PlaybackEngine {
         if (!position.isNaN() && position >= 0.0) positionMs = (position * 1000).toLong()
         val length = item?.let { seconds(it.duration) }
         val playerLength = length?.takeIf { !it.isNaN() && !it.isInfinite() && it > 0.0 }?.let { (it * 1000).toLong() }
+        playerLengthMs = playerLength ?: 0L
         val known = currentTrack?.durationMs?.takeIf { it > 0L }
         durationMs = when {
             playerLength == null -> known ?: 0L
@@ -248,6 +269,8 @@ private class IosPlaybackEngine : PlaybackEngine {
     override fun play(track: Track, url: String, startPositionMs: Long) = onMain {
         currentTrack = track
         lastError = null
+        endedEarlyFor = null
+        playerLengthMs = 0L
         itemObservers.forEach { NSNotificationCenter.defaultCenter.removeObserver(it) }
         val link = (if (url.startsWith("file://")) NSURL.fileURLWithPath(url.removePrefix("file://")) else NSURL.URLWithString(url))
         if (link == null) {

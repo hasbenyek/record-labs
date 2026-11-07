@@ -11,8 +11,9 @@ import org.jetbrains.skia.RuntimeShaderBuilder
 // behind, blurred a little first.
 
 private const val LIQUID_GLASS_SKSL = """
-// Liquid glass: the (blurred) page behind, bent at the rim like a glass lens, a little
-// colour split at the edge, a soft tint, and a bright rim where the light falls.
+// Liquid glass (dark, like Telegram's): the (blurred) page behind, bent at the rim like a
+// glass lens, a little colour split at the edge, a dark tint, a light rim, and a soft
+// light where the finger holds the glass (it moves with the finger).
 uniform shader content;
 uniform float2 origin;     // the glass's top-left inside the recorded area (px)
 uniform float2 size;       // the glass's size (px)
@@ -20,6 +21,8 @@ uniform float radius;      // corner radius (px)
 uniform float bezel;       // width of the bent rim (px)
 uniform float bend;        // how far the rim bends the page (px)
 uniform float dpx;         // one dp in px
+uniform float2 touch;      // the finger, in the recorded area (px)
+uniform float press;       // 0 (not held) .. 1 (held)
 
 float sdRound(float2 p, float2 c, float2 h, float r) {
     float2 q = abs(p - c) - (h - r);
@@ -41,25 +44,29 @@ half4 main(float2 coord) {
     n = nl > 0.0001 ? n / nl : float2(0.0, -1.0);
     float inside = -d;                                  // px from the edge, inwards
     float x = clamp(1.0 - inside / bezel, 0.0, 1.0);    // 1 at the edge, 0 past the rim
-    float lens = bend * (1.0 - sqrt(max(1.0 - x * x, 0.0)));   // a round lens edge
+    // A round lens edge; held, the glass bends a little more (it swells).
+    float lens = bend * (1.0 + 0.35 * press) * (1.0 - sqrt(max(1.0 - x * x, 0.0)));
     // The rim shows what is just outside it, bent in; each colour a little apart.
     half4 col;
     col.r = content.eval(coord + n * lens * 1.00).r;
-    col.g = content.eval(coord + n * lens * 1.10).g;
-    col.b = content.eval(coord + n * lens * 1.22).b;
+    col.g = content.eval(coord + n * lens * 1.12).g;
+    col.b = content.eval(coord + n * lens * 1.26).b;
     col.a = 1.0;
-    // A touch more colour, then the dark glass tint.
+    // More colour, then the dark glass tint (the page still shows through).
     half l = dot(col.rgb, half3(0.299, 0.587, 0.114));
-    col.rgb = mix(half3(l), col.rgb, 1.25);
-    col.rgb = col.rgb * 0.78 + half3(0.075);
-    // Light from the top left: a bright thin rim there and at the opposite corner,
-    // a soft glow just inside the edge.
-    float facing = dot(n, normalize(float2(-0.6, -0.8)));
-    float rimBand = 1.0 - smoothstep(0.0, 1.6 * dpx, inside);
-    float glowBand = 1.0 - smoothstep(0.0, 9.0 * dpx, inside);
-    float rim = rimBand * (0.28 + 0.62 * pow(abs(facing), 2.0));
-    float glow = glowBand * 0.10 * (0.5 + 0.5 * facing);
-    col.rgb += half3(rim + glow);
+    col.rgb = mix(half3(l), col.rgb, 1.35);
+    col.rgb = col.rgb * 0.60 + half3(0.035);
+    // Light from the top left, or from the finger while it holds the glass.
+    float2 toTouch = touch - coord;
+    float2 lightDir = normalize(mix(float2(-0.6, -0.8), length(toTouch) > 1.0 ? normalize(toTouch) : float2(-0.6, -0.8), press));
+    float facing = dot(n, lightDir);
+    float rimBand = 1.0 - smoothstep(0.0, 1.5 * dpx, inside);
+    float glowBand = 1.0 - smoothstep(0.0, 10.0 * dpx, inside);
+    float rim = rimBand * (0.22 + 0.60 * pow(max(facing, 0.0), 1.5) + 0.18 * pow(max(-facing, 0.0), 2.0));
+    float glow = glowBand * 0.08 * (0.4 + 0.6 * max(facing, 0.0));
+    // The finger's light: a soft spot under it while held.
+    float spot = press * 0.16 * exp(-dot(toTouch, toTouch) / (2.0 * (34.0 * dpx) * (34.0 * dpx)));
+    col.rgb += half3(rim + glow + spot);
     // Soft edge (anti-aliased).
     float cover = clamp(0.5 - d, 0.0, 1.0);
     return half4(clamp(col.rgb, 0.0, 1.0) * cover, cover);
@@ -74,7 +81,10 @@ private val liquidGlassEffect: RuntimeEffect? by lazy {
 
 internal actual val liquidGlassSupported: Boolean get() = liquidGlassEffect != null
 
-internal actual fun liquidGlassRenderEffect(width: Float, height: Float, margin: Float, density: Float): RenderEffect? {
+internal actual fun liquidGlassRenderEffect(
+    width: Float, height: Float, margin: Float, density: Float,
+    touchX: Float, touchY: Float, press: Float,
+): RenderEffect? {
     val effect = liquidGlassEffect ?: return null
     if (width <= 0f || height <= 0f) return null
     return runCatching {
@@ -87,6 +97,8 @@ internal actual fun liquidGlassRenderEffect(width: Float, height: Float, margin:
         builder.uniform("bezel", 18f * density)
         builder.uniform("bend", 16f * density)
         builder.uniform("dpx", density)
+        builder.uniform("touch", touchX + margin, touchY + margin)
+        builder.uniform("press", press.coerceIn(0f, 1f))
         val blur = ImageFilter.makeBlur(2f * density, 2f * density, FilterTileMode.CLAMP, null, null)
         ImageFilter.makeRuntimeShader(builder, arrayOf("content"), arrayOf(blur)).asComposeRenderEffect()
     }.onFailure { println("Liquid glass unavailable: ${it.message}") }.getOrNull()

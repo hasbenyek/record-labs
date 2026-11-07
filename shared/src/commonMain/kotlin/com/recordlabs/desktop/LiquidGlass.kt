@@ -1,5 +1,17 @@
 package com.recordlabs.desktop
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.sign
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -66,7 +78,69 @@ internal val LocalGlassBackdrop = staticCompositionLocalOf<GlassBackdrop?> { nul
  * reading a recording [margin] px larger on every side; null where the platform keeps
  * its own glass.
  */
-internal expect fun liquidGlassRenderEffect(width: Float, height: Float, margin: Float, density: Float): RenderEffect?
+internal expect fun liquidGlassRenderEffect(
+    width: Float, height: Float, margin: Float, density: Float,
+    touchX: Float, touchY: Float, press: Float,
+): RenderEffect?
+
+/**
+ * A finger on a glass button (as in Telegram): it swells while held, stretches and
+ * leans the way it is pulled (like rubber, less the further it goes), and its light
+ * follows the finger; let go, it springs back.
+ */
+internal class GlassPressState {
+    /** The finger, in the button (px). */
+    var touch by mutableStateOf(Offset.Zero)
+    val press = Animatable(0f)
+    val pull = Animatable(Offset.Zero, Offset.VectorConverter)
+}
+
+/**
+ * The stretch of [glassPress] (see [GlassPressState]). The finger is only watched,
+ * never taken: taps, the tab highlight's drag and swipes work as before.
+ */
+@Composable
+internal fun Modifier.glassPress(state: GlassPressState): Modifier {
+    val scope = rememberCoroutineScope()
+    return this
+        .pointerInput(state) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                state.touch = down.position
+                scope.launch { state.press.animateTo(1f, spring(dampingRatio = 0.7f, stiffness = 700f)) }
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Initial)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) break
+                    state.touch = change.position
+                    val moved = change.position - down.position
+                    scope.launch { state.pull.snapTo(moved) }
+                }
+                scope.launch { state.press.animateTo(0f, spring(dampingRatio = 0.55f, stiffness = 320f)) }
+                scope.launch { state.pull.animateTo(Offset.Zero, spring(dampingRatio = 0.45f, stiffness = 280f)) }
+            }
+        }
+        .graphicsLayer {
+            val width = size.width.coerceAtLeast(1f)
+            val height = size.height.coerceAtLeast(1f)
+            // Rubber: the further it is pulled, the less it follows.
+            fun rubber(value: Float, limit: Float): Float {
+                val amount = abs(value) / limit
+                return sign(value) * limit * (1f - 1f / (amount * 0.6f + 1f))
+            }
+            val pull = state.pull.value
+            val reach = minOf(width, height)
+            val dx = rubber(pull.x, reach * 0.9f)
+            val dy = rubber(pull.y, reach * 0.9f)
+            val held = state.press.value
+            val swell = 0.06f * held * (reach / maxOf(width, height)).coerceIn(0.25f, 1f)
+            // Longer the way it is pulled, a little thinner across it.
+            scaleX = 1f + swell + abs(dx) / width * 0.55f - abs(dy) / height * 0.10f
+            scaleY = 1f + swell + abs(dy) / height * 0.55f - abs(dx) / width * 0.10f
+            translationX = dx * 0.5f
+            translationY = dy * 0.5f
+        }
+}
 
 /** Whether this platform draws the liquid glass ([liquidGlassRenderEffect]). */
 internal expect val liquidGlassSupported: Boolean
@@ -102,10 +176,10 @@ internal fun Modifier.glassBackdropSource(backdrop: GlassBackdrop?): Modifier =
 
 /** The liquid glass behind a pill or circle (the dock's surfaces), over the recorded page. */
 @Composable
-internal fun Modifier.liquidGlassBackground(backdrop: GlassBackdrop?): Modifier {
+internal fun Modifier.liquidGlassBackground(backdrop: GlassBackdrop?, press: GlassPressState? = null): Modifier {
     if (backdrop == null) return this
     val glass = rememberGraphicsLayer()
-    val state = remember { object { var origin = Offset.Zero; var effect: RenderEffect? = null; var effectKey = 0L } }
+    val state = remember { object { var origin = Offset.Zero; var effect: RenderEffect? = null; var effectKey = "" } }
     return this
         .onGloballyPositioned { state.origin = it.positionInWindow() }
         .drawBehind {
@@ -113,9 +187,12 @@ internal fun Modifier.liquidGlassBackground(backdrop: GlassBackdrop?): Modifier 
             @Suppress("UNUSED_VARIABLE") val version = backdrop.version
             val marginPx = 24.dp.roundToPx()
             val margin = marginPx.toFloat()
-            val key = (size.width.toLong() shl 32) or size.height.toLong()
+            // Held: the light follows the finger (read here, so it redraws as it moves).
+            val held = press?.press?.value ?: 0f
+            val touch = press?.touch ?: Offset.Zero
+            val key = "${size.width}x${size.height}|${if (held > 0.001f) "$held@${touch.x},${touch.y}" else "rest"}"
             if (state.effect == null || state.effectKey != key) {
-                state.effect = liquidGlassRenderEffect(size.width, size.height, margin, density)
+                state.effect = liquidGlassRenderEffect(size.width, size.height, margin, density, touch.x, touch.y, held)
                 state.effectKey = key
             }
             val effect = state.effect ?: return@drawBehind

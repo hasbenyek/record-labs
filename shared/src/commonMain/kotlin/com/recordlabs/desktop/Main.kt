@@ -1083,6 +1083,58 @@ internal fun RecordLabsWindow(
                 if (requestId != playbackRequestId) return@launch
                 if (rawUrl != null) {
                     mediaPlayer.play(track, rawUrl)
+                    // iPhone: a stream that does not start, stops, or stands still while it
+                    // should play gets another source (from where it was), twice at most.
+                    if (AppPlatform.isIos) {
+                        val firstUrl: String = rawUrl
+                        scope.launch {
+                            var url = firstUrl
+                            var retries = 0
+                            var lastPosition = -1L
+                            var lastProgressAt = currentTimeMillis()
+                            while (requestId == playbackRequestId && currentTrack?.id == track.id) {
+                                delay(500L)
+                                if (requestId != playbackRequestId || currentTrack?.id != track.id) break
+                                val position = mediaPlayer.positionMs
+                                val now = currentTimeMillis()
+                                if (position != lastPosition || !isPlaying) {
+                                    lastPosition = position
+                                    lastProgressAt = now
+                                }
+                                // The song's end (nothing more to play) is not a stall.
+                                val atEnd = mediaPlayer.durationMs > 0L && position >= mediaPlayer.durationMs - 3_000L
+                                val failed = mediaPlayer.lastError != null || (isPlaying && !atEnd && now - lastProgressAt > 12_000L)
+                                if (!failed) continue
+                                com.recordlabs.desktop.data.AppDiagnostics.log(
+                                    "playback",
+                                    "\"${track.title}\": ${mediaPlayer.lastError ?: "no progress for 12 s"} at ${position / 1000} s",
+                                )
+                                if (retries >= 2) {
+                                    playbackLoading = false
+                                    playbackNotice = "Audio belum bisa diputar. Coba lagu lain."
+                                    if (com.recordlabs.desktop.data.AppSettings.autoSkipOnError.value && isPlaying) {
+                                        delay(1_500L)
+                                        if (requestId == playbackRequestId && currentTrack?.id == track.id) skipOnErrorRef?.invoke()
+                                    }
+                                    break
+                                }
+                                retries++
+                                repository.reportPlaybackFailure(track.id, url)
+                                val next = runCatching { repository.playbackStreamUrl(track) }.getOrNull()
+                                if (requestId != playbackRequestId || currentTrack?.id != track.id) break
+                                if (next == null) {
+                                    retries = 2
+                                    continue
+                                }
+                                url = next
+                                val wasPlaying = isPlaying
+                                mediaPlayer.play(track, next, position)
+                                if (!wasPlaying) mediaPlayer.pause()
+                                lastPosition = -1L
+                                lastProgressAt = currentTimeMillis()
+                            }
+                        }
+                    }
                     suspend fun awaitNativePrepared(): Boolean {
                         val deadline = currentTimeMillis() + 10_000L
                         while (requestId == playbackRequestId &&
@@ -4212,14 +4264,17 @@ private val DockBarHeight = 58.dp
 /** Liquid-glass surface of the dock: see-through grey, a thin light edge and a soft top highlight. */
 @Composable
 private fun DockGlass(shape: androidx.compose.ui.graphics.Shape, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    // iPhone: real liquid glass over the page behind (LiquidGlass.kt); elsewhere as before.
+    // iPhone: real liquid glass over the page behind (LiquidGlass.kt), that swells and
+    // stretches under the finger like Telegram's; elsewhere as before.
     val backdrop = LocalGlassBackdrop.current
+    val press = if (backdrop != null) remember { GlassPressState() } else null
     Box(
         modifier
+            .then(if (press != null) Modifier.glassPress(press) else Modifier)
             .shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .6f))
             .clip(shape)
             .then(
-                if (backdrop != null) Modifier.liquidGlassBackground(backdrop)
+                if (backdrop != null) Modifier.liquidGlassBackground(backdrop, press)
                 else Modifier
                     .background(HeaderGlass)
                     .background(Brush.verticalGradient(0f to Color.White.copy(alpha = .10f), 0.5f to Color.Transparent))
