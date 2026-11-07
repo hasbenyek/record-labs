@@ -15,6 +15,9 @@ actual object MediaPlatform {
     actual fun localFileUri(path: String): String? = File(path).takeIf { it.isFile }?.let { "file://" + it.path }
     actual fun cachedSongUri(token: String): String? = offlineFile(token).takeIf { it.isFile && it.length() > 0L }?.let { "file://" + it.path }
     actual fun prefetchLater(token: String, remoteUrl: String, delayMs: Long) = Unit
+    actual fun preloadNext(trackId: String, remoteUrl: String) {
+        (createPlaybackEngine() as? IosPlaybackEngine)?.preload(trackId, remoteUrl)
+    }
     actual fun completePrefetchUri(token: String, remoteUrl: String): String? = null
     actual fun playerUrl(remoteUrl: String, userAgent: String): String {
         IosStreamHeaders.remember(remoteUrl, userAgent)

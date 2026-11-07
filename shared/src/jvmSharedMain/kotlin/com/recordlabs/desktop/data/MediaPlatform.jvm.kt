@@ -8,6 +8,7 @@ actual object MediaPlatform {
     actual fun localFileUri(path: String): String? = File(path).takeIf { it.isFile }?.toURI()?.toASCIIString()
     actual fun cachedSongUri(token: String): String? = WindowsAudioCache.playableLocalFile(token)?.toURI()?.toString()
     actual fun prefetchLater(token: String, remoteUrl: String, delayMs: Long) = WindowsAudioCache.prefetchLater(token, remoteUrl, delayMs)
+    actual fun preloadNext(trackId: String, remoteUrl: String) = Unit
     actual fun completePrefetchUri(token: String, remoteUrl: String): String? {
         val prefetch = WindowsAudioCache.getOrPrefetch(token, remoteUrl)
         return if (prefetch.isComplete && prefetch.errorMsg == null && prefetch.file.length() > 0L) prefetch.file.toURI().toString() else null

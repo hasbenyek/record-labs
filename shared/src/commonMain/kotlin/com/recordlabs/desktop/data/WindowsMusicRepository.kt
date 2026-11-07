@@ -2278,6 +2278,8 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
 
     /** iPhone: songs whose HLS audio did not play (the MP4 streams are used for them). */
     private val iosHlsFailed = LockedSet<String>()
+    /** iPhone: songs whose MP4 stream did not play (their HLS audio is waited for). */
+    private val iosMp4Failed = LockedSet<String>()
     private val iosHlsCache = concurrentMapOf<String, CachedStream>()
 
     /**
@@ -2345,7 +2347,12 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         val hls = if (videoId !in iosHlsFailed) streamResolveScope.async { runCatching { iosHlsAudio(videoId) }.getOrNull() } else null
         val mp4 = streamResolveScope.async { runCatching { resolveStream(videoId, allowSlowFallback = true, reason = "play") }.getOrNull() }
         if (hls != null) streamResolveScope.launch { hls.await()?.let { result.complete("HLS" to it) } }
-        streamResolveScope.launch { mp4.await()?.let { result.complete("MP4" to it) } }
+        streamResolveScope.launch {
+            val stream = mp4.await() ?: return@launch
+            // An MP4 that already failed for this song plays only when there is no HLS.
+            if (videoId in iosMp4Failed && hls != null) runCatching { hls.await() }
+            result.complete("MP4" to stream)
+        }
         streamResolveScope.launch {
             runCatching { hls?.await() }
             runCatching { mp4.await() }
@@ -2367,6 +2374,7 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             iosHlsCache.remove(videoId)
         } else {
             streamCache.remove(videoId)
+            iosMp4Failed.add(videoId)
         }
         AppDiagnostics.log("playback", "$videoId: ${if (hls?.url == url) "HLS audio" else "MP4 stream"} did not play, trying another source")
     }

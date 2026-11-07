@@ -8,4 +8,5 @@ internal actual val liquidGlassSupported: Boolean get() = false
 internal actual fun liquidGlassRenderEffect(
     width: Float, height: Float, margin: Float, density: Float,
     touchX: Float, touchY: Float, press: Float,
+    validLeft: Float, validTop: Float, validRight: Float, validBottom: Float,
 ): RenderEffect? = null

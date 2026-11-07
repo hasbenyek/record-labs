@@ -12,6 +12,8 @@ expect object MediaPlatform {
     /** file:// URI of the song when it is in the playback cache or downloaded. */
     fun cachedSongUri(token: String): String?
     fun prefetchLater(token: String, remoteUrl: String, delayMs: Long)
+    /** iPhone: starts loading the next song's stream in the player, so it starts at once (no-op elsewhere). */
+    fun preloadNext(trackId: String, remoteUrl: String)
     /** Starts (or joins) the download into the cache; the file's URI when it is already complete. */
     fun completePrefetchUri(token: String, remoteUrl: String): String?
     /** URL the player opens for [remoteUrl] (the desktop's local proxy). */

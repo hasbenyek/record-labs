@@ -36,6 +36,7 @@ import platform.AVFoundation.replaceCurrentItemWithPlayerItem
 import platform.AVFoundation.seekToTime
 import platform.AVFoundation.timeControlStatus
 import platform.AVFoundation.volume
+import platform.AVFoundation.muted
 import platform.CoreMedia.CMTime
 import platform.CoreMedia.CMTimeGetSeconds
 import platform.CoreMedia.CMTimeMake
@@ -80,7 +81,7 @@ import kotlin.math.abs
  * buttons (play, pause, next, previous, scrubbing) sent to the app like the
  * Android notification's buttons.
  */
-private class IosPlaybackEngine : PlaybackEngine {
+internal class IosPlaybackEngine : PlaybackEngine {
     override var isPlaying: Boolean = false
         private set
     override var isReady: Boolean = false
@@ -211,7 +212,10 @@ private class IosPlaybackEngine : PlaybackEngine {
 
     private fun publish() {
         val item = player.currentItem
-        isPlaying = item != null && player.timeControlStatus == AVPlayerTimeControlStatusPlaying
+        // Playing while the app wants it playing and nothing failed: a short wait for data
+        // (AVPlayer "waiting") no longer flips the button to play and back.
+        isPlaying = item != null && item.status != AVPlayerItemStatusFailed &&
+            (player.timeControlStatus == AVPlayerTimeControlStatusPlaying || (wantsPlay && lastError == null))
         isReady = item?.status == AVPlayerItemStatusReadyToPlay
         val position = seconds(player.currentTime())
         if (!position.isNaN() && position >= 0.0) positionMs = (position * 1000).toLong()
@@ -293,13 +297,12 @@ private class IosPlaybackEngine : PlaybackEngine {
             publish()
             return@onMain
         }
-        // YouTube's stream URLs only answer the app (client) they were made for.
-        val options = IosStreamHeaders.userAgentFor(url)?.let { agent ->
-            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to agent))
-        }
-        val asset = AVURLAsset(uRL = link, options = options)
-        val item = AVPlayerItem(asset = asset)
-        item.audioTimePitchAlgorithm = AVAudioTimePitchAlgorithmSpectral
+        // The next song, already loading in the background (preload): it starts at once.
+        val ready = preloaded?.takeIf { it.first == track.id && it.second.status != AVPlayerItemStatusFailed }?.second
+        preloaded = null
+        preloadPlayer.replaceCurrentItemWithPlayerItem(null)
+        if (ready != null) AppDiagnostics.log("playback", "\"${track.title}\": preloaded stream used")
+        val item = ready ?: makeItem(link, url)
         itemObservers = listOf(
             NSNotificationCenter.defaultCenter.addObserverForName(AVPlayerItemDidPlayToEndTimeNotification, item, NSOperationQueue.mainQueue) { _ ->
                 wantsPlay = false
@@ -320,6 +323,32 @@ private class IosPlaybackEngine : PlaybackEngine {
         loadArtwork(track)
         publish()
         updateNowPlaying(force = true)
+    }
+
+    private fun makeItem(link: NSURL, url: String): AVPlayerItem {
+        // YouTube's stream URLs only answer the app (client) they were made for.
+        val options = IosStreamHeaders.userAgentFor(url)?.let { agent ->
+            mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to agent))
+        }
+        val asset = AVURLAsset(uRL = link, options = options)
+        return AVPlayerItem(asset = asset).also { it.audioTimePitchAlgorithm = AVAudioTimePitchAlgorithmSpectral }
+    }
+
+    /** A silent player that loads the next song while this one plays (an item buffers once it has a player). */
+    private val preloadPlayer = AVPlayer().apply {
+        muted = true
+        automaticallyWaitsToMinimizeStalling = false
+    }
+    private var preloaded: Pair<String, AVPlayerItem>? = null
+
+    /** Starts loading [trackId]'s stream [url], so [play] can start it at once. */
+    fun preload(trackId: String, url: String) = onMain {
+        if (trackId == currentTrack?.id || preloaded?.first == trackId) return@onMain
+        if (url.startsWith("file://")) return@onMain
+        val link = NSURL.URLWithString(url) ?: return@onMain
+        val item = makeItem(link, url)
+        preloadPlayer.replaceCurrentItemWithPlayerItem(item)
+        preloaded = trackId to item
     }
 
     override fun pause() = onMain {

@@ -81,6 +81,8 @@ internal val LocalGlassBackdrop = staticCompositionLocalOf<GlassBackdrop?> { nul
 internal expect fun liquidGlassRenderEffect(
     width: Float, height: Float, margin: Float, density: Float,
     touchX: Float, touchY: Float, press: Float,
+    /** The part of the recorded area the page covers (by the screen's edge the rest is empty). */
+    validLeft: Float, validTop: Float, validRight: Float, validBottom: Float,
 ): RenderEffect?
 
 /**
@@ -190,19 +192,42 @@ internal fun Modifier.liquidGlassBackground(backdrop: GlassBackdrop?, press: Gla
             // Held: the light follows the finger (read here, so it redraws as it moves).
             val held = press?.press?.value ?: 0f
             val touch = press?.touch ?: Offset.Zero
-            val key = "${size.width}x${size.height}|${if (held > 0.001f) "$held@${touch.x},${touch.y}" else "rest"}"
+            val recordSize = IntSize(ceil(size.width + 2 * margin).toInt(), ceil(size.height + 2 * margin).toInt())
+            val shift = backdrop.originInWindow - state.origin
+            // Where the page is in the recorded area: by the screen's edge part of it is
+            // empty, and the glass would bend that emptiness in (dark edges).
+            val pageSize = backdrop.layer.size
+            val validLeft = (margin + shift.x).coerceAtLeast(0f)
+            val validTop = (margin + shift.y).coerceAtLeast(0f)
+            val validRight = (margin + shift.x + pageSize.width).coerceAtMost(recordSize.width.toFloat())
+            val validBottom = (margin + shift.y + pageSize.height).coerceAtMost(recordSize.height.toFloat())
+            val key = "${size.width}x${size.height}|${validLeft.toInt()},${validTop.toInt()},${validRight.toInt()},${validBottom.toInt()}|" +
+                if (held > 0.001f) "$held@${touch.x},${touch.y}" else "rest"
             if (state.effect == null || state.effectKey != key) {
-                state.effect = liquidGlassRenderEffect(size.width, size.height, margin, density, touch.x, touch.y, held)
+                state.effect = liquidGlassRenderEffect(
+                    size.width, size.height, margin, density, touch.x, touch.y, held,
+                    validLeft, validTop, validRight, validBottom,
+                )
                 state.effectKey = key
             }
             val effect = state.effect ?: return@drawBehind
             glass.renderEffect = effect
-            val recordSize = IntSize(ceil(size.width + 2 * margin).toInt(), ceil(size.height + 2 * margin).toInt())
-            val shift = backdrop.originInWindow - state.origin
             glass.record(recordSize) {
                 translate(margin + shift.x, margin + shift.y) { drawLayer(backdrop.layer) }
             }
             glass.topLeft = IntOffset(-marginPx, -marginPx)
             drawLayer(glass)
         }
+}
+
+
+/**
+ * No press highlight: on the iPhone a glass button answers a touch by swelling and
+ * stretching (glassPress); the usual highlight drew a white box past its round shape.
+ */
+internal object NoPressIndication : androidx.compose.foundation.IndicationNodeFactory {
+    override fun create(interactionSource: androidx.compose.foundation.interaction.InteractionSource): androidx.compose.ui.node.DelegatableNode =
+        object : Modifier.Node() {}
+    override fun hashCode(): Int = -0x5eed
+    override fun equals(other: Any?): Boolean = other === this
 }

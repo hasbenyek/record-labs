@@ -47,6 +47,7 @@ import kotlinx.coroutines.isActive
 import platform.AVFoundation.AVPlayer
 import platform.AVFoundation.AVPlayerItem
 import platform.AVFoundation.AVPlayerItemStatusFailed
+import platform.AVFoundation.AVPlayerItemStatusReadyToPlay
 import platform.AVFoundation.AVPlayerItemVideoOutput
 import platform.AVFoundation.AVPlayerLooper
 import platform.AVFoundation.AVQueuePlayer
@@ -118,6 +119,8 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
     private var lastStallLogAt = 0.0
     private var loggedFailure = false
     private var loggedError = false
+    private var readyAt = 0.0
+    private var reattached = 0
 
     private fun log(message: String) = AppDiagnostics.log("video", "$label: $message")
 
@@ -213,6 +216,18 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
         }
         if (item == null) return
         if (outputs.none { it.first === item }) attachOutputs()
+        // HLS: an output added before the item was ready can stay empty for good; a fresh
+        // one is added once it is ready and still shows nothing (twice at most).
+        if (item.status == AVPlayerItemStatusReadyToPlay && !pictureShown) {
+            if (readyAt == 0.0) readyAt = now
+            if (now - readyAt > 1.2 * (reattached + 1) && reattached < 2) {
+                reattached++
+                outputs.filter { it.first === item }.forEach { (old, output) -> old.removeOutput(output) }
+                outputs.removeAll { it.first === item }
+                attachOutputs()
+                log("no picture ${((now - readyAt) * 1000).toInt()} ms after ready: new picture output ($reattached)")
+            }
+        }
         val output = outputs.firstOrNull { it.first === item }?.second ?: return
         val time = output.itemTimeForHostTime(now)
         if (!output.hasNewPixelBufferForItemTime(time)) return

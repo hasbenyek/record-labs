@@ -23,6 +23,8 @@ uniform float bend;        // how far the rim bends the page (px)
 uniform float dpx;         // one dp in px
 uniform float2 touch;      // the finger, in the recorded area (px)
 uniform float press;       // 0 (not held) .. 1 (held)
+uniform float2 validMin;   // the page's part of the recorded area (outside it: nothing)
+uniform float2 validMax;
 
 float sdRound(float2 p, float2 c, float2 h, float r) {
     float2 q = abs(p - c) - (h - r);
@@ -48,9 +50,9 @@ half4 main(float2 coord) {
     float lens = bend * (1.0 + 0.35 * press) * (1.0 - sqrt(max(1.0 - x * x, 0.0)));
     // The rim shows what is just outside it, bent in; each colour a little apart.
     half4 col;
-    col.r = content.eval(coord + n * lens * 1.00).r;
-    col.g = content.eval(coord + n * lens * 1.12).g;
-    col.b = content.eval(coord + n * lens * 1.26).b;
+    col.r = content.eval(clamp(coord + n * lens * 1.00, validMin, validMax)).r;
+    col.g = content.eval(clamp(coord + n * lens * 1.12, validMin, validMax)).g;
+    col.b = content.eval(clamp(coord + n * lens * 1.26, validMin, validMax)).b;
     col.a = 1.0;
     // More colour, then the dark glass tint (the page still shows through).
     half l = dot(col.rgb, half3(0.299, 0.587, 0.114));
@@ -84,6 +86,7 @@ internal actual val liquidGlassSupported: Boolean get() = liquidGlassEffect != n
 internal actual fun liquidGlassRenderEffect(
     width: Float, height: Float, margin: Float, density: Float,
     touchX: Float, touchY: Float, press: Float,
+    validLeft: Float, validTop: Float, validRight: Float, validBottom: Float,
 ): RenderEffect? {
     val effect = liquidGlassEffect ?: return null
     if (width <= 0f || height <= 0f) return null
@@ -99,7 +102,11 @@ internal actual fun liquidGlassRenderEffect(
         builder.uniform("dpx", density)
         builder.uniform("touch", touchX + margin, touchY + margin)
         builder.uniform("press", press.coerceIn(0f, 1f))
-        val blur = ImageFilter.makeBlur(2f * density, 2f * density, FilterTileMode.CLAMP, null, null)
+        // Only the page: the blur and the bent rim stretch its edge, never the empty side.
+        builder.uniform("validMin", validLeft + 0.5f, validTop + 0.5f)
+        builder.uniform("validMax", maxOf(validLeft + 1f, validRight - 0.5f), maxOf(validTop + 1f, validBottom - 0.5f))
+        val crop = org.jetbrains.skia.IRect.makeLTRB(validLeft.toInt(), validTop.toInt(), validRight.toInt(), validBottom.toInt())
+        val blur = ImageFilter.makeBlur(2f * density, 2f * density, FilterTileMode.CLAMP, null, crop)
         ImageFilter.makeRuntimeShader(builder, arrayOf("content"), arrayOf(blur)).asComposeRenderEffect()
     }.onFailure { println("Liquid glass unavailable: ${it.message}") }.getOrNull()
 }

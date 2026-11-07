@@ -832,7 +832,14 @@ internal fun RecordLabsWindow(
                     LyricsClockHold.onPlaybackSample(nativePlayback.positionMs, nativePlayback.isPlaying)
                     if (nativePlayback.positionMs > 0L) playbackLoading = false
                 }
-                nativePlayback.error?.let {
+                // iPhone: an engine error is usually passing (another source is tried by the
+                // watcher in beginPlayback, which shows its own notice when none plays); a
+                // stale "Playback ..." notice goes once the song moves on.
+                if (AppPlatform.isIos) {
+                    if (nativePlayback.error == null && nativePlayback.isPlaying && nativePlayback.positionMs > 0L &&
+                        playbackNotice?.startsWith("Playback") == true
+                    ) playbackNotice = null
+                } else nativePlayback.error?.let {
                     playbackNotice = it
                     playbackLoading = false
                 }
@@ -1095,14 +1102,19 @@ internal fun RecordLabsWindow(
                         if (currentTrack?.id == track.id) currentTrack = currentTrack?.copy(durationMs = length)
                     }
                     mediaPlayer.play(track, rawUrl)
-                    // iPhone: the next song's stream is found while this one plays, so it starts
-                    // at once (search results are warmed the same way).
+                    // iPhone: the next song's stream is found and loaded into a silent player
+                    // while this one plays, so next starts at once (like the Android and
+                    // desktop players' prefetch).
                     if (AppPlatform.isIos) scope.launch {
-                        delay(4_000L)
+                        delay(2_500L)
                         if (requestId != playbackRequestId) return@launch
-                        playbackQueue.getOrNull(playbackQueueIndex + 1)
+                        val next = playbackQueue.getOrNull(playbackQueueIndex + 1)
                             ?.takeIf { it.id != track.id && it.localPath.isNullOrBlank() }
-                            ?.let { next -> runCatching { repository.warmStream(next) } }
+                            ?: return@launch
+                        val nextUrl = runCatching { repository.playbackStreamUrl(next) }.getOrNull() ?: return@launch
+                        if (requestId == playbackRequestId) {
+                            com.recordlabs.desktop.data.MediaPlatform.preloadNext(next.id, nextUrl)
+                        }
                     }
                     // iPhone: a stream that does not start, stops, or stands still while it
                     // should play gets another source (from where it was), twice at most.
@@ -2963,6 +2975,7 @@ homeLoading = homeLoading,
                             onSearchBounds = { left, width -> landscapeSearchLeftPx = left; landscapeSearchWidthPx = width },
                             modifier = Modifier.align(Alignment.TopCenter),
                             hideFraction = { compactHeaderHide.value },
+                            glassBackdrop = pageBackdrop,
                         )
                         CompactBottomBar(Modifier.align(Alignment.BottomCenter), pageBackdrop) {
                                     CompactPlayerDock(
@@ -4211,6 +4224,36 @@ internal fun CompactPlayerDock(
     /** The Listen Together page is open: its round button is the one marked active. */
     listenTogetherSelected: Boolean = false,
 ) {
+    // iPhone: the glass answers a touch itself (it swells), without a white box over it.
+    if (LocalGlassBackdrop.current != null) {
+        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.foundation.LocalIndication provides NoPressIndication) {
+            CompactPlayerDockContent(track, isPlaying, isLoading, notice, onPlayPause, onNext, onOpenPlayer, selected, isProfileSelected, homeLoading, collapsed, onSelect, onProfile, onListenTogether, onExpand, listenTogetherSelected)
+        }
+    } else {
+        CompactPlayerDockContent(track, isPlaying, isLoading, notice, onPlayPause, onNext, onOpenPlayer, selected, isProfileSelected, homeLoading, collapsed, onSelect, onProfile, onListenTogether, onExpand, listenTogetherSelected)
+    }
+}
+
+@OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+@Composable
+private fun CompactPlayerDockContent(
+    track: Track?,
+    isPlaying: Boolean,
+    isLoading: Boolean,
+    notice: String?,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onOpenPlayer: () -> Unit,
+    selected: AppSection?,
+    isProfileSelected: Boolean,
+    homeLoading: Boolean,
+    collapsed: Boolean,
+    onSelect: (AppSection) -> Unit,
+    onProfile: () -> Unit,
+    onListenTogether: () -> Unit,
+    onExpand: () -> Unit,
+    listenTogetherSelected: Boolean,
+) {
     val shrunk = collapsed && track != null
     // The round button beside the tabs: Profile (Listen Together is one of the tabs).
     val profileButton: @Composable () -> Unit = {
@@ -4230,32 +4273,54 @@ internal fun CompactPlayerDock(
             }
         }
     }
+    // iPhone: the two layouts morph into each other (as in Apple Music on iOS 26): the
+    // tab bar shrinks into the round tab button and grows back out of it, the song bar
+    // moves and stretches to its new place, Profile glides along. Elsewhere: a crossfade.
+    val morph = LocalGlassBackdrop.current != null
+    androidx.compose.animation.SharedTransitionLayout {
+    val transitionScope = this
     androidx.compose.animation.AnimatedContent(
         targetState = shrunk,
         modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 12.dp),
         transitionSpec = {
             (fadeIn(tween(260, delayMillis = 60)) togetherWith fadeOut(tween(160)))
-                .using(androidx.compose.animation.SizeTransform(clip = false) { _, _ -> tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing) })
+                .using(androidx.compose.animation.SizeTransform(clip = false) { _, _ ->
+                    if (morph) spring(dampingRatio = 0.82f, stiffness = 380f)
+                    else tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+                })
         },
         label = "player-dock",
     ) { small ->
+        val visibility = this
+        // One piece that changes shape between the layouts (by [key]).
+        @Composable
+        fun morphing(key: String): Modifier = if (!morph) Modifier else with(transitionScope) {
+            Modifier.sharedBounds(
+                rememberSharedContentState(key),
+                animatedVisibilityScope = visibility,
+                enter = fadeIn(tween(200, delayMillis = 60)),
+                exit = fadeOut(tween(140)),
+                boundsTransform = { _, _ -> spring(dampingRatio = 0.78f, stiffness = 360f) },
+                resizeMode = androidx.compose.animation.SharedTransitionScope.ResizeMode.RemeasureToBounds,
+            )
+        }
         if (small) {
             // One row: the current tab, the song, Profile.
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DockGlass(CircleShape, Modifier.size(DockBarHeight).clickable(onClick = onExpand)) {
+                DockGlass(CircleShape, morphing("dock-tabs").size(DockBarHeight).clickable(onClick = onExpand)) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         val icon = if (listenTogetherSelected) Icons.Default.Group else (selected ?: AppSection.Home).icon
                         Icon(icon, "Show all tabs", tint = MaterialTheme.colors.primary, modifier = Modifier.size(25.dp))
                     }
                 }
-                DockSongBar(track!!, isPlaying, isLoading, notice, onPlayPause, onNext, onOpenPlayer, Modifier.weight(1f).height(DockBarHeight))
-                profileButton()
+                DockSongBar(track!!, isPlaying, isLoading, notice, onPlayPause, onNext, onOpenPlayer, morphing("dock-song").weight(1f).height(DockBarHeight))
+                Box(morphing("dock-profile")) { profileButton() }
             }
         } else {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (track != null) DockSongBar(track, isPlaying, isLoading, notice, onPlayPause, onNext, onOpenPlayer, Modifier.fillMaxWidth().height(56.dp))
+                if (track != null) DockSongBar(track, isPlaying, isLoading, notice, onPlayPause, onNext, onOpenPlayer, morphing("dock-song").fillMaxWidth().height(56.dp))
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    DockGlass(RoundedCornerShape(50), Modifier.weight(1f).height(DockBarHeight)) {
+                    DockGlass(RoundedCornerShape(50), morphing("dock-tabs").weight(1f).height(DockBarHeight)) {
                         DockTabBar(
                             selectedIndex = when {
                                 listenTogetherSelected -> 2
@@ -4273,10 +4338,11 @@ internal fun CompactPlayerDock(
                             },
                         )
                     }
-                    profileButton()
+                    Box(morphing("dock-profile")) { profileButton() }
                 }
             }
         }
+    }
     }
 }
 
@@ -4292,7 +4358,11 @@ private fun DockGlass(shape: androidx.compose.ui.graphics.Shape, modifier: Modif
     Box(
         modifier
             .then(if (press != null) Modifier.glassPress(press) else Modifier)
-            .shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .6f))
+            // iPhone: a lighter shadow (the dark one read as black smudges by the glass).
+            .then(
+                if (press != null) Modifier.shadow(8.dp, shape, ambientColor = Color.Black.copy(alpha = .22f), spotColor = Color.Black.copy(alpha = .28f))
+                else Modifier.shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .6f)),
+            )
             .clip(shape)
             .then(
                 if (backdrop != null) Modifier.liquidGlassBackground(backdrop, press)
@@ -4376,8 +4446,15 @@ private fun DockTabBar(selectedIndex: Int, onSelectIndex: (Int) -> Unit) {
                             // Decided from the finger's last place (the highlight may still be a frame behind).
                             val target = dragPosition[0].roundToInt().coerceIn(0, tabs.lastIndex)
                             dragging = false
-                            scope.launch { position.animateTo(target.toFloat(), spring(dampingRatio = 0.72f, stiffness = 420f)) }
-                            if (target != currentIndex) latestSelect(target)
+                            // Listen Together lives on another page with its own tab bar: going
+                            // there (or back) waits until the highlight has arrived, so the new
+                            // bar starts where this one ended instead of from halfway.
+                            val otherBar = target != currentIndex && (target == 2 || currentIndex == 2)
+                            scope.launch {
+                                position.animateTo(target.toFloat(), spring(dampingRatio = 0.72f, stiffness = 420f))
+                                if (otherBar) latestSelect(target)
+                            }
+                            if (target != currentIndex && !otherBar) latestSelect(target)
                         },
                         onDragCancel = {
                             dragging = false
@@ -4506,6 +4583,8 @@ internal fun CompactHeader(
     modifier: Modifier = Modifier,
     /** 0..1: slid up out of sight (scrolling down hides it, scrolling up brings it back). */
     hideFraction: () -> Float = { 0f },
+    /** iPhone: the page behind, for the search box's liquid glass (LiquidGlass.kt). */
+    glassBackdrop: GlassBackdrop? = null,
 ) {
     var textFieldValue by remember { mutableStateOf(TextFieldValue(query, TextRange(query.length))) }
     LaunchedEffect(query) {
@@ -4537,7 +4616,12 @@ internal fun CompactHeader(
                     textFieldValue = value
                     if (value.text != query) onQueryChange(value.text)
                 },
-                modifier = Modifier.weight(1f).clip(RoundedCornerShape(50)).border(1.dp, HeaderGlassBorder, RoundedCornerShape(50))
+                modifier = Modifier.weight(1f).clip(RoundedCornerShape(50))
+                    // iPhone: liquid glass like the dock; elsewhere the glass edge as before.
+                    .then(
+                        if (glassBackdrop != null) Modifier.liquidGlassBackground(glassBackdrop)
+                        else Modifier.border(1.dp, HeaderGlassBorder, RoundedCornerShape(50)),
+                    )
                     .trackTextInputFocus()
                     .onFocusChanged { onFocus(it.isFocused) }
                     .onGloballyPositioned {
@@ -4561,7 +4645,7 @@ internal fun CompactHeader(
                 keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit() }, onDone = { onSubmit() }, onGo = { onSubmit() }),
                 colors = TextFieldDefaults.textFieldColors(
-                    backgroundColor = HeaderGlass,
+                    backgroundColor = if (glassBackdrop != null) Color.Transparent else HeaderGlass,
                     focusedIndicatorColor = Color.Transparent,
                     unfocusedIndicatorColor = Color.Transparent,
                 ),
