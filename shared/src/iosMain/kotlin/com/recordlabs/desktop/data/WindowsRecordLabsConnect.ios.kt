@@ -29,6 +29,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import platform.Foundation.NSRecursiveLock
 import kotlin.concurrent.Volatile
+import com.recordlabs.desktop.data.AppDiagnostics
 
 /**
  * Record Labs Connect on the iPhone: the same protocol, messages and decisions as the
@@ -217,7 +218,32 @@ actual object WindowsRecordLabsConnect {
 
     /** A short diary of Connect's decisions (who owns the sound, handoffs): the Xcode console. */
     actual fun debugLog(message: String) {
-        println("RLConnect [${deviceName}] $message")
+        AppDiagnostics.log("connect", message)
+    }
+
+    /**
+     * A short Bonjour search when Connect starts: iOS asks for Local Network access on
+     * it for sure (a plain connection to the Wi-Fi may not show the question in time),
+     * and every later connection to the other devices needs that access.
+     */
+    private var bonjour: platform.Foundation.NSNetServiceBrowser? = null
+
+    private fun askLocalNetworkAccess() {
+        platform.darwin.dispatch_async(platform.darwin.dispatch_get_main_queue()) {
+            runCatching {
+                bonjour?.stop()
+                val browser = platform.Foundation.NSNetServiceBrowser()
+                browser.searchForServicesOfType("_recordlabs._tcp.", inDomain = "local.")
+                bonjour = browser
+                debugLog("asked iOS for Local Network access (Bonjour search)")
+            }.onFailure { debugLog("Bonjour search failed: ${it.message}") }
+        }
+        executor.schedule(15_000L) {
+            platform.darwin.dispatch_async(platform.darwin.dispatch_get_main_queue()) {
+                bonjour?.stop()
+                bonjour = null
+            }
+        }
     }
 
     private fun peerName(id: String?): String = id?.let { locked(seen) { seen[it]?.name } ?: it.take(8) } ?: "-"
@@ -347,6 +373,9 @@ actual object WindowsRecordLabsConnect {
             ipv4InterfaceCount = IosTcp.localIpv4().size,
         )
         lastNetworkSignature = networkSignature()
+        val kinds = accountKeys.map { it.substringBefore(':') }.distinct().joinToString(", ")
+        debugLog("start: account ids [$kinds], Wi-Fi ${IosTcp.localIpv4().joinToString { "${it.interfaceName} ${it.address}" }.ifBlank { "none" }}, relay ${if (ConnectRelay.accountSecret(accountKeys) != null) "yes" else "no (no sync id)"}")
+        askLocalNetworkAccess()
         linkExecutor.execute(::tcpAcceptLoop)
         // Devices of this account on other networks, through the Connect relay.
         val relaySecret = ConnectRelay.accountSecret(accountKeys)
@@ -893,6 +922,7 @@ actual object WindowsRecordLabsConnect {
         }
         tcpServer?.takeIf { it !== bound }?.close()
         tcpServer = bound
+        debugLog("listening on TCP $TCP_PORT")
         _discoveryStatus.value = _discoveryStatus.value.copy(listenerReady = true, lastError = null)
         while (running && !bound.isClosed) {
             val client = bound.accept(1_000) ?: continue
@@ -900,6 +930,7 @@ actual object WindowsRecordLabsConnect {
                 client.close()
                 break
             }
+            debugLog("TCP: ${client.remoteHost} connected to this iPhone")
             val link = TcpLink(client)
             tcpLinks.add(link)
             link.start()
@@ -937,11 +968,24 @@ actual object WindowsRecordLabsConnect {
             }
             .distinct()
             .filter { it !in selfAddresses && it !in linkedHosts }
+        debugLog("scan: ${targets.size} addresses on ${own.joinToString { "${it.interfaceName} ${it.address}" }.ifBlank { "no Wi-Fi" }}")
+        val left = intArrayOf(targets.size)
+        val answered = mutableListOf<String>()
+        fun finished(target: String, ok: Boolean) {
+            val summary = locked(answered) {
+                if (ok) answered += target
+                left[0]--
+                if (left[0] == 0) answered.toList() else null
+            }
+            if (summary != null) debugLog("scan done: ${summary.size} answered${if (summary.isNotEmpty()) " (" + summary.joinToString() + ")" else ""}")
+        }
         targets.forEach { target ->
             scanExecutor.execute {
                 if (!running) return@execute
-                if (tcpLinks.toList().any { it.remoteHost == target }) return@execute
-                val socket = IosTcp.connect(target, TCP_PORT, 400) ?: return@execute
+                if (tcpLinks.toList().any { it.remoteHost == target }) return@execute finished(target, true)
+                val socket = IosTcp.connect(target, TCP_PORT, 400)
+                finished(target, socket != null)
+                if (socket == null) return@execute
                 if (!running) {
                     socket.close()
                     return@execute

@@ -79,7 +79,14 @@ object WindowsLyricsProviderRegistry {
     private val fallbackRepositoryDelegate = lazy { WindowsMusicRepository() }
     private val fallbackRepository by fallbackRepositoryDelegate
     @kotlin.concurrent.Volatile private var closed = false
-    @kotlin.concurrent.Volatile private var appleMusicToken: String? = null
+    /**
+     * The music.apple.com web token, kept between launches: finding it means downloading
+     * Apple Music's web app script (megabytes), which held up the first lyrics after
+     * every start (on the iPhone most). A token that stopped working is fetched again.
+     */
+    @kotlin.concurrent.Volatile private var appleMusicToken: String? =
+        runCatching { WindowsPreferences.getString(APPLE_TOKEN_KEY, "") }.getOrDefault("").ifBlank { null }
+    private const val APPLE_TOKEN_KEY = "appleMusicWebToken"
     private val listeners = CopyOnWriteList<(trackId: String, result: LyricsResult) -> Unit>()
 
     /**
@@ -258,6 +265,7 @@ object WindowsLyricsProviderRegistry {
         }
 
         val cleanedTrack = track.copy(title = cleanTitle(track.title))
+        val lookupStartedAt = currentTimeMillis()
         var result = firstAvailable(track, cleanedTrack)
         if (result.lyrics.isBlank()) {
             // Metadata from queue/radio can include featured artists or an
@@ -283,6 +291,10 @@ object WindowsLyricsProviderRegistry {
             // network is unavailable during revalidation.
             peekCached(track)?.let { return@withContext it }
         }
+        if (AppDiagnostics.enabled) AppDiagnostics.log(
+            "lyrics",
+            "\"${track.title}\": shown ${result.provider.ifBlank { "none" }} after ${currentTimeMillis() - lookupStartedAt} ms",
+        )
         result
     }
 
@@ -410,7 +422,20 @@ object WindowsLyricsProviderRegistry {
             // Always queried so it is available, but awaited strictly last.
             "YouTube Music" to { fetchYouTubeLyrics(track.id) },
         ).filter { (name, _) -> providerEnabled(name) }
-        val pending = providers.map { (name, provider) -> name to async { runCatching { provider() }.getOrNull() } }
+        val startedAt = currentTimeMillis()
+        val pending = providers.map { (name, provider) ->
+            name to async {
+                val result = runCatching { provider() }
+                // iPhone diagnostics: how long each provider took.
+                if (AppDiagnostics.enabled) AppDiagnostics.log(
+                    "lyrics",
+                    "\"${track.title}\" $name: ${currentTimeMillis() - startedAt} ms, " +
+                        (result.exceptionOrNull()?.let { "failed: ${it.message?.take(80)}" }
+                            ?: if (result.getOrNull().isNullOrBlank()) "nothing" else "found"),
+                )
+                result.getOrNull()
+            }
+        }
         suspend fun paxsenixReady(): String? = if (paxsenix.isCompleted) {
             runCatching { paxsenix.await() }.getOrNull()?.takeIf(String::isNotBlank)
         } else null
@@ -457,6 +482,10 @@ object WindowsLyricsProviderRegistry {
                 while (true) {
                     val fetch = fetchPaxsenixAcross(queries, automatic = true)
                     lyrics = fetch.lyrics.firstOrNull()
+                    if (AppDiagnostics.enabled) AppDiagnostics.log(
+                        "lyrics",
+                        "\"${track.title}\" Paxsenix: ${currentTimeMillis() - startedAt} ms, ${if (lyrics != null) "found" else if (fetch.busy) "busy" else "nothing"}",
+                    )
                     if (lyrics != null || !fetch.busy) break
                     // Still busy: ask again later while this song is still wanted.
                     val pause = PAXSENIX_BUSY_RETRY_DELAYS_MS[minOf(retry, PAXSENIX_BUSY_RETRY_DELAYS_MS.lastIndex)]
@@ -718,13 +747,15 @@ object WindowsLyricsProviderRegistry {
     }
 
     /** Word-timed lyrics always outrank line-only lyrics; coverage breaks ties. */
+    private val LINE_TIMESTAMP = Regex("(?m)^\\s*\\[\\d{1,3}:\\d{2}[.:]\\d{2,3}\\]")
+
     internal fun lyricsTimingPriority(lyrics: String): Int {
         val lines = WindowsRichLyrics.parse(lyrics)
         val wordTimedLines = lines.count { it.words.isNotEmpty() }
         val timedWords = lines.sumOf { it.words.size }
         // Payloads carrying real [mm:ss.xx] stamps must always outrank untimed
         // plain text, whose rows are only synthetic 3-second steps.
-        val hasLineTimestamps = Regex("(?m)^\\s*\\[\\d{1,3}:\\d{2}[.:]\\d{2,3}\\]").containsMatchIn(lyrics)
+        val hasLineTimestamps = LINE_TIMESTAMP.containsMatchIn(lyrics)
         return (if (timedWords > 0) 1_000_000 else 0) +
             (if (hasLineTimestamps) 500_000 else 0) +
             wordTimedLines * 1_000 + timedWords * 10 + lines.size
@@ -927,8 +958,35 @@ object WindowsLyricsProviderRegistry {
         val asset = Regex("/assets/index~[^/]+\\.js").find(home)?.value
             ?: error("Apple Music web token asset not found")
         val script = client.get("https://beta.music.apple.com$asset").bodyAsText()
-        return Regex("eyJ[A-Za-z0-9_\\-=]+\\.[A-Za-z0-9_\\-=]+\\.[A-Za-z0-9_\\-=]+").find(script)?.value
-            ?: error("Apple Music web token not found")
+        return (findWebToken(script) ?: error("Apple Music web token not found"))
+            .also { token -> runCatching { WindowsPreferences.putString(APPLE_TOKEN_KEY, token) } }
+    }
+
+    /**
+     * The first JSON web token in [script] ("eyJ" + three dot-separated parts of
+     * A-Z a-z 0-9 _ - =), as the regex eyJ[..]+\.[..]+\.[..]+ finds it, by a plain scan:
+     * a regex over the megabytes of Apple's script took seconds on the iPhone.
+     */
+    internal fun findWebToken(script: String): String? {
+        fun tokenChar(c: Char) = c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == '_' || c == '-' || c == '='
+        var from = 0
+        while (true) {
+            val start = script.indexOf("eyJ", from)
+            if (start < 0) return null
+            var i = start + 3
+            var ok = true
+            // Three parts: the first after "eyJ", each at least one character, "." between.
+            for (part in 0 until 3) {
+                val partStart = i
+                while (i < script.length && tokenChar(script[i])) i++
+                if (i == partStart) { ok = false; break }
+                if (part < 2) {
+                    if (i < script.length && script[i] == '.') i++ else { ok = false; break }
+                }
+            }
+            if (ok) return script.substring(start, i)
+            from = start + 1
+        }
     }
 
     private fun scoreCandidate(track: Track, candidate: AppleLyricsCandidate): Int {

@@ -22,7 +22,11 @@ import platform.UIKit.UIApplicationWillEnterForegroundNotification
  * as on Android. While the app is in the background its animations pause (like
  * Android); the music keeps playing.
  */
-fun MainViewController() = ComposeUIViewController { RecordLabsIosApp() }
+fun MainViewController(): platform.UIKit.UIViewController {
+    // The diagnostics diary (copied from the Connect page).
+    com.recordlabs.desktop.IosDiagnostics.install()
+    return ComposeUIViewController { RecordLabsIosApp() }
+}
 
 @Composable
 private fun RecordLabsIosApp() {

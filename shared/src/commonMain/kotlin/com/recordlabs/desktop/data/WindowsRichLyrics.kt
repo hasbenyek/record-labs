@@ -27,6 +27,9 @@ object WindowsRichLyrics {
     private val backgroundMarker = Regex("\\{bg\\}", RegexOption.IGNORE_CASE)
     private val paxAgent = Regex("^(v\\d+):\\s*(.*)$", RegexOption.IGNORE_CASE)
     private val paxBackground = Regex("^\\[bg:\\s*(.*)\\]$", RegexOption.IGNORE_CASE)
+    // Compiled once (they ran for every line; slow on the iPhone).
+    private val whitespaceRun = Regex("\\s+")
+    private val bracketOnlyLine = Regex("^\\[[^\\]]*\\]$")
 
     fun parse(raw: String): List<RichLyricLine> {
         if (raw.isBlank()) return emptyList()
@@ -120,7 +123,7 @@ object WindowsRichLyrics {
                 if (hasInlineBackground) {
                     val rawBackground = rawContent.substring(backgroundMarkerIndex + inlineBackgroundMatch!!.value.length)
                         .replace(agentMarker, "").replace(backgroundMarker, "").trim()
-                    val mainTokenCount = mainBeforeBackground.split(Regex("\\s+")).count(String::isNotBlank)
+                    val mainTokenCount = mainBeforeBackground.split(whitespaceRun).count(String::isNotBlank)
                     val mainWords = words.take(mainTokenCount)
                     val backgroundWords = stripBackgroundParentheses(words.drop(mainTokenCount))
                     val mainText = mainBeforeBackground
@@ -146,7 +149,7 @@ object WindowsRichLyrics {
             index++
         }
         if (result.isNotEmpty()) return result.sortedBy(RichLyricLine::startMs)
-        return source.filterNot { metadata.containsMatchIn(it) || Regex("^\\[[^\\]]*\\]$").matches(it) }.mapIndexed { plainIndex, text ->
+        return source.filterNot { metadata.containsMatchIn(it) || bracketOnlyLine.matches(it) }.mapIndexed { plainIndex, text ->
             RichLyricLine(plainIndex * 3_000L, text)
         }
     }
@@ -236,10 +239,10 @@ object WindowsRichLyrics {
 
     internal fun timedText(source: String, words: List<TimedLyricWord>): String {
         // TTML indentation/newlines are formatting, not lyric line breaks.
-        val cleanSource = source.replace(Regex("\\s+"), " ").trim()
+        val cleanSource = source.replace(whitespaceRun, " ").trim()
         if (words.isEmpty()) return cleanSource
         val wordText = words.joinToString("") { it.text + if (it.trailingSpace) " " else "" }.trim()
-        return if (cleanSource.replace(Regex("\\s+"), "") == wordText.replace(Regex("\\s+"), "")) cleanSource else wordText
+        return if (cleanSource.replace(whitespaceRun, "") == wordText.replace(whitespaceRun, "")) cleanSource else wordText
     }
 
     internal fun parseTime(value: String): Long {

@@ -175,6 +175,8 @@ private class IosPlaybackEngine : PlaybackEngine {
         publish()
     }
 
+    private var loggedLengthFor: String? = null
+
     private fun publish() {
         val item = player.currentItem
         isPlaying = item != null && player.timeControlStatus == AVPlayerTimeControlStatusPlaying
@@ -182,8 +184,20 @@ private class IosPlaybackEngine : PlaybackEngine {
         val position = seconds(player.currentTime())
         if (!position.isNaN() && position >= 0.0) positionMs = (position * 1000).toLong()
         val length = item?.let { seconds(it.duration) }
-        durationMs = length?.takeIf { !it.isNaN() && !it.isInfinite() && it > 0.0 }?.let { (it * 1000).toLong() }
-            ?: currentTrack?.durationMs ?: 0L
+        val playerLength = length?.takeIf { !it.isNaN() && !it.isInfinite() && it > 0.0 }?.let { (it * 1000).toLong() }
+        val known = currentTrack?.durationMs?.takeIf { it > 0L }
+        durationMs = when {
+            playerLength == null -> known ?: 0L
+            // AVPlayer's own length far from the song's real one (a guessed length of a
+            // fragmented stream, often double): the song's length. A music video's own
+            // length (a little longer than the song) is kept.
+            known != null && (playerLength > known * 14 / 10 || playerLength < known * 7 / 10) -> known
+            else -> playerLength
+        }
+        if (isReady && loggedLengthFor != currentTrack?.id) {
+            loggedLengthFor = currentTrack?.id
+            AppDiagnostics.log("playback", "\"${currentTrack?.title}\": AVPlayer length ${playerLength ?: -1} ms, song ${known ?: -1} ms, shown ${durationMs} ms")
+        }
         _state.value = WindowsPlaybackSnapshot(currentTrack?.id, isPlaying, isReady, positionMs, durationMs, lastError)
         updateNowPlaying(force = false)
     }

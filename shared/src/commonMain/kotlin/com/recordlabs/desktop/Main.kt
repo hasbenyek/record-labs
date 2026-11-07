@@ -1625,6 +1625,7 @@ internal fun RecordLabsWindow(
             // instead of the room, a song from the room took the sound from that device,
             // and the guest-controls setting was bypassed. Connect is off until it leaves.
             if (listenTogetherGuest) {
+                com.recordlabs.desktop.data.AppDiagnostics.log("connect", "off: listening in a Listen Together room")
                 WindowsRecordLabsConnect.stop()
                 connectApplyJob?.cancel()
                 applyingConnectSync = false
@@ -1635,6 +1636,12 @@ internal fun RecordLabsWindow(
             // and Android can match the same unique YouTube channel handle even
             // when one side does not expose an email or DATASYNC_ID.
             val profile = runCatching { repository.googleAccountProfile() }.getOrNull()
+            // iPhone: a session saved without the account's sync id (its login can read the
+            // page before it is there) gets it now: without it the Connect relay is off.
+            if (AppPlatform.isIos && WindowsPreferences.googleSession()?.dataSyncId.isNullOrBlank()) {
+                val recovered = runCatching { repository.recoverDataSyncId() }.getOrNull()
+                com.recordlabs.desktop.data.AppDiagnostics.log("connect", if (recovered != null) "account sync id read from YouTube Music" else "no account sync id (relay stays off)")
+            }
             val accountKeys = buildList {
                 (profile?.email ?: WindowsPreferences.googleAccountEmail()).trim().takeIf(String::isNotBlank)
                     ?.let { add("email:$it") }
@@ -1645,6 +1652,7 @@ internal fun RecordLabsWindow(
                     ?.let { add("sync:$it") }
             }
             if (accountKeys.isEmpty()) {
+                com.recordlabs.desktop.data.AppDiagnostics.log("connect", "not started: no Google account details (email, channel or sync id) yet")
                 WindowsRecordLabsConnect.stop()
                 return@LaunchedEffect
             }
@@ -2623,9 +2631,12 @@ internal fun RecordLabsWindow(
 
                     if (catalogDestination != null) {
                     Box(Modifier.fillMaxSize().hiddenUnderOpenSheet()) {
-                    Row(Modifier.fillMaxSize().pageEdgePadding(compact)) {
+                    Row(Modifier.fillMaxSize().pageEdgePadding(compact, underStatusBar = true)) {
                         if (!compact) { Spacer(Modifier.width(76.dp)) }
+                        // iPhone: the page is recorded for the navigation's liquid glass.
+                        val catalogBackdrop = rememberGlassBackdrop()
                         Box(Modifier.weight(1f).fillMaxHeight().progressiveHeaderBlur(compact = compact)) {
+                            Box(Modifier.fillMaxSize().glassBackdropSource(catalogBackdrop)) {
                             CatalogPage(
                                 compact = compact,
                                 destination = catalogDestination!!,
@@ -2645,9 +2656,10 @@ internal fun RecordLabsWindow(
                                     playbackNotice = if (nowSaved) "Saved to your library" else "Removed from your library"
                                 },
                             )
+                            }
                             if (compact) {
                                 // Portrait: the same dock as the other portrait pages.
-                                CompactBottomBar(Modifier.align(Alignment.BottomCenter)) {
+                                CompactBottomBar(Modifier.align(Alignment.BottomCenter), catalogBackdrop) {
                                     CompactPlayerDock(
                                         track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
                                         onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
@@ -2739,10 +2751,12 @@ internal fun RecordLabsWindow(
                             contentWindowInsets = if (AppPlatform.isIos) WindowInsets(0, 0, 0, 0) else androidx.compose.material.ScaffoldDefaults.contentWindowInsets,
                         ) { padding ->
                             Box(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true)) {
-                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp)) {
+                                // iPhone: the page is recorded for the navigation's liquid glass.
+                                val profileBackdrop = rememberGlassBackdrop()
+                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp).glassBackdropSource(profileBackdrop)) {
                                     androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) { profileContent() }
                                 }
-                                CompactBottomBar(Modifier.align(Alignment.BottomCenter)) {
+                                CompactBottomBar(Modifier.align(Alignment.BottomCenter), profileBackdrop) {
                                     CompactPlayerDock(
                                         track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
                                         onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
@@ -2840,7 +2854,7 @@ homeLoading = homeLoading,
                         // (the navigation used to sit a home indicator's height too high).
                         contentWindowInsets = if (AppPlatform.isIos) WindowInsets(0, 0, 0, 0) else WindowInsets.navigationBars,
                     ) { padding ->
-                        Row(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true)) {
+                        Row(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true, underStatusBar = true)) {
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                         // The search box slides away while scrolling down (like the dock shrinking)
                         // and comes back on scrolling up; it stays while it is being used.
@@ -2849,7 +2863,9 @@ homeLoading = homeLoading,
                             androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing),
                             label = "compact-header-hide",
                         )
-                        Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value })) {
+                        // iPhone: the page is recorded for the navigation's liquid glass.
+                        val pageBackdrop = rememberGlassBackdrop()
+                        Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value }).glassBackdropSource(pageBackdrop)) {
                             androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) {
                             MainContent(section, compact = true, homeListState = homeListState, repository = repository, homeFeed = homeFeed, homeLoading = homeLoading, homeError = homeError, searchHistory = searchHistory, searchQuery = searchQuery, searchFilter = searchFilter, searchResults = searchResults, searchSubmitGeneration = searchSubmitGeneration, libraryTarget = libraryTarget, onLibraryNavigate = ::openLibrary, onLibraryBack = ::navigateBack, library = library, onCreatePlaylist = { name -> libraryStore.createPlaylist(name).also { if (it) library = libraryStore.snapshot() } }, onTrack = ::playTrack, onSearchTrack = ::playSearchTrack, onTrackMore = { trackMenuTarget = it }, onPlayNext = ::enqueueTrack, onOpenCatalog = ::openCatalogPage, onHomeItem = ::playHomeItem, onListenTogether = ::openListenTogether, onHomeRefresh = {
                                 scope.launch {
@@ -2862,6 +2878,8 @@ homeLoading = homeLoading,
                             })
                             }
                         }
+                        // iPhone: the page scrolls on under the status bar, shaded there.
+                        StatusBarScrim(Modifier.align(Alignment.TopCenter))
                         // See-through header over the page (outside the blurred box, so it stays sharp).
                         CompactHeader(
                             query = searchQuery.value,
@@ -2873,7 +2891,7 @@ homeLoading = homeLoading,
                             modifier = Modifier.align(Alignment.TopCenter),
                             hideFraction = { compactHeaderHide.value },
                         )
-                        CompactBottomBar(Modifier.align(Alignment.BottomCenter)) {
+                        CompactBottomBar(Modifier.align(Alignment.BottomCenter), pageBackdrop) {
                                     CompactPlayerDock(
                                         track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
                                         onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
@@ -3519,6 +3537,32 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
                     )
                     discovery.lastError?.let { error ->
                         Text(error, color = Color(0xFFFF6B6B), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp))
+                    }
+                    // iPhone: the last steps Connect took (also in the diagnostics file).
+                    if (com.recordlabs.desktop.data.AppDiagnostics.enabled) {
+                        var diaryTick by remember { mutableStateOf(0) }
+                        LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(1_000); diaryTick++ } }
+                        val diary = remember(diaryTick) { com.recordlabs.desktop.data.AppDiagnostics.recent("connect", 8) }
+                        if (diary.isNotEmpty()) Text(
+                            diary.joinToString("\n"),
+                            color = SecondaryText.copy(alpha = 0.8f),
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                        // The whole diary (Connect, videos, lyrics, playback) to paste into a message.
+                        @Suppress("DEPRECATION")
+                        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                        var copied by remember { mutableStateOf(false) }
+                        androidx.compose.material.TextButton(
+                            onClick = {
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(com.recordlabs.desktop.data.AppDiagnostics.allRecent()))
+                                copied = true
+                            },
+                            modifier = Modifier.padding(horizontal = 4.dp),
+                        ) {
+                            Text(if (copied) "Diagnostics copied" else "Copy diagnostics", color = Color.White.copy(alpha = 0.85f), fontSize = 12.sp)
+                        }
                     }
                     if (discovery.rejectedAccountPackets > 0) {
                         Text(
@@ -4168,13 +4212,19 @@ private val DockBarHeight = 58.dp
 /** Liquid-glass surface of the dock: see-through grey, a thin light edge and a soft top highlight. */
 @Composable
 private fun DockGlass(shape: androidx.compose.ui.graphics.Shape, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    // iPhone: real liquid glass over the page behind (LiquidGlass.kt); elsewhere as before.
+    val backdrop = LocalGlassBackdrop.current
     Box(
         modifier
             .shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .6f))
             .clip(shape)
-            .background(HeaderGlass)
-            .background(Brush.verticalGradient(0f to Color.White.copy(alpha = .10f), 0.5f to Color.Transparent))
-            .border(1.dp, HeaderGlassBorder, shape),
+            .then(
+                if (backdrop != null) Modifier.liquidGlassBackground(backdrop)
+                else Modifier
+                    .background(HeaderGlass)
+                    .background(Brush.verticalGradient(0f to Color.White.copy(alpha = .10f), 0.5f to Color.Transparent))
+                    .border(1.dp, HeaderGlassBorder, shape),
+            ),
     ) { content() }
 }
 
@@ -4349,15 +4399,18 @@ internal val CompactBottomBarHeight = 76.dp
 
 /** Holds the floating navigation over the page, with a soft shade instead of a solid bar. */
 @Composable
-internal fun CompactBottomBar(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+internal fun CompactBottomBar(modifier: Modifier = Modifier, backdrop: GlassBackdrop? = null, content: @Composable () -> Unit) {
     Box(modifier.fillMaxWidth()) {
         Box(
             Modifier.matchParentSize().drawBehind {
                 drawRect(Brush.verticalGradient(0f to Color.Transparent, 0.45f to Color.Black.copy(alpha = 0.35f), 1f to Color.Black.copy(alpha = 0.65f)))
             },
         )
-        // iPhone: above the home indicator (the shade still runs down to the screen's edge).
-        Box(Modifier.padding(bottom = LocalEdgeInsets.current.bottom)) { content() }
+        // iPhone: above the home indicator, a little into its safe area like the
+        // iPhone's own floating tab bars (the shade still runs down to the screen's edge).
+        Box(Modifier.padding(bottom = dockBottomRoom())) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalGlassBackdrop provides backdrop) { content() }
+        }
     }
 }
 
@@ -4382,8 +4435,10 @@ internal fun CompactHeader(
     LaunchedEffect(query) {
         if (query != textFieldValue.text) textFieldValue = TextFieldValue(query, TextRange(query.length))
     }
+    // iPhone: the header sits below the status bar (its shade runs on up under it).
+    val statusBar = LocalEdgeInsets.current.top
     Box(
-        modifier.fillMaxWidth().height(72.dp).graphicsLayer {
+        modifier.fillMaxWidth().height(72.dp + statusBar).graphicsLayer {
             val hide = hideFraction()
             translationY = -size.height * 1.1f * hide
             alpha = 1f - hide
@@ -4396,7 +4451,7 @@ internal fun CompactHeader(
             },
         )
         Row(
-            Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            Modifier.fillMaxSize().padding(top = statusBar).padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -5293,7 +5348,7 @@ private fun HomePage(
             verticalArrangement = Arrangement.spacedBy(22.dp),
         ) {
                 // Clear of the see-through header (Listen Together moved into it in portrait).
-                item { Spacer(Modifier.height(if (compact) 64.dp else 56.dp)) }
+                item { Spacer(Modifier.height((if (compact) 64.dp else 56.dp) + statusBarRoom(compact))) }
             when {
                 showSkeleton || feed == null -> item { HomeLoadingSkeleton(compact) }
                 else -> {
@@ -5330,7 +5385,7 @@ private fun HomePage(
             enter = androidx.compose.animation.fadeIn(tween(180)) + androidx.compose.animation.scaleIn(tween(220), initialScale = 0.6f) +
                 androidx.compose.animation.slideInVertically(tween(260)) { -it },
             exit = androidx.compose.animation.fadeOut(tween(200)) + androidx.compose.animation.scaleOut(tween(200), targetScale = 0.6f),
-            modifier = Modifier.fillMaxWidth().padding(top = 72.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 72.dp + statusBarRoom(true)),
         ) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                 Surface(
@@ -5721,7 +5776,7 @@ private fun SearchPage(
 
     Column(Modifier.fillMaxSize()) {
         // Portrait: the search box is in the see-through header above the page.
-        Spacer(Modifier.height(if (compact) 72.dp else 56.dp))
+        Spacer(Modifier.height((if (compact) 72.dp else 56.dp) + statusBarRoom(compact)))
         if (compact) {
             // Typing in the header after a search goes back to the suggestions.
             LaunchedEffect(query) {
@@ -6097,7 +6152,7 @@ private fun LibraryPage(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = if (compact) 12.dp else 20.dp)) {
             // Clear of the floating header bar (back/home/search) on wide windows.
-            Spacer(Modifier.height(if (compact) 72.dp else 76.dp))
+            Spacer(Modifier.height((if (compact) 72.dp else 76.dp) + statusBarRoom(compact)))
             Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     when {
@@ -7155,7 +7210,8 @@ private fun CatalogPage(
         }
     }
     if (loading) {
-        if (destination.kind == "Artist") ArtistPageSkeleton(compact) else SearchResultsSkeleton()
+        if (destination.kind == "Artist") ArtistPageSkeleton(compact)
+        else Box(Modifier.padding(top = statusBarRoom(compact))) { SearchResultsSkeleton() }
         return
     }
     val rawLoaded = page ?: return
@@ -7337,8 +7393,7 @@ private fun CatalogPage(
         val rowWidth = maxWidth - 48.dp
         // Portrait album / playlist: the artwork's colours behind the page, as on
         // the player and lyrics pages.
-        // iPhone: the colours run on up under the status bar too.
-        if (compact && destination.kind != "Artist") PlayerAmbientBackground(loaded.artworkUrl, Modifier.fillMaxSize().bleedEdges(LocalEdgeInsets.current.top, 0.dp))
+        if (compact && destination.kind != "Artist") PlayerAmbientBackground(loaded.artworkUrl)
         LazyColumn(
             Modifier.fillMaxSize().pageScrollbar(catalogListState)
                 // Artist pages scroll by click-and-drag too, like the home page.
@@ -7666,14 +7721,16 @@ private fun CatalogPage(
             }
         }
         if (compact) {
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
+            // iPhone: the artwork runs on under the status bar, shaded there; the buttons stay below it.
+            StatusBarScrim(Modifier.align(Alignment.TopCenter))
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
             }
             // Album / playlist: its menu (play, save to library, share...) at the top right.
             if (isCollectionPage) {
                 IconButton(
                     onClick = { showPageMenu = true },
-                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape),
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape),
                 ) {
                     Icon(Icons.Default.MoreHoriz, "More", tint = Color.White)
                 }
@@ -7764,7 +7821,7 @@ private fun ArtistShelfPage(
         LazyColumn(
             Modifier.fillMaxSize().pageScrollbar(shelfListState).dragVertically(shelfListState),
             state = shelfListState,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = if (compact) 72.dp else 96.dp, bottom = 168.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(top = (if (compact) 72.dp else 96.dp) + statusBarRoom(compact), bottom = 168.dp),
         ) {
             item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
@@ -7807,7 +7864,8 @@ private fun ArtistShelfPage(
             }
         }
         if (compact) {
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
+            StatusBarScrim(Modifier.align(Alignment.TopCenter))
+            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(top = statusBarRoom(true)).padding(16.dp).background(Color.Black.copy(alpha = .45f), CircleShape)) {
                 Icon(Icons.Default.ArrowBack, "Back", tint = Color.White)
             }
         }

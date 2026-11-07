@@ -349,6 +349,11 @@ object WindowsAnimatedArtworkRepository {
             .mapNotNull { response[it]?.jsonPrimitive?.contentOrNull }
             .filter { isAllowedAppleVideoUrl(it) && it.substringBefore('?').endsWith(".m3u8", ignoreCase = true) }
 
+        // iPhone: Apple's own HLS playlist, as Apple Music plays it. AVPlayer picks the
+        // rendition (HEVC or H.264) and size itself; the direct MP4 below is 2160x2160,
+        // far too heavy to download and copy picture by picture on a phone.
+        if (AppPlatform.isIos) hlsCandidates.firstOrNull { !failedStreamUrls.contains(it) }?.let { return it }
+
         // 1. If platform supports HEVC (Windows, Debian, Pop!_OS, or Linux with full codecs like RPM Fusion / Arch),
         // direct 4K MP4 (2160x2160) provides the maximum possible resolution with ZERO extra network latency.
         if (supportsHevc && directMp4 != null) {

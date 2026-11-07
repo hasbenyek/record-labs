@@ -1295,6 +1295,42 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
     }
 
     /** YouTube's account switcher (the account picker on youtube.com), with the session's cookies. */
+    /**
+     * The account's DATASYNC_ID from YouTube Music's page, for a session saved without it
+     * (the iPhone's login can read the page's config before it is filled in). Saved with
+     * the session; null when the page is not signed in or has none. Only read when the
+     * signed-in page says so: a signed-out page carries a visitor's id there.
+     */
+    suspend fun recoverDataSyncId(): String? = withContext(IoDispatcher) {
+        val session = WindowsPreferences.googleSession() ?: return@withContext null
+        session.dataSyncId.takeIf(String::isNotBlank)?.let { return@withContext it }
+        runCatching {
+            val html = client.get("https://music.youtube.com/") {
+                header("Accept", "text/html,application/xhtml+xml")
+                header("Accept-Language", "en-US,en;q=0.9")
+                header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+                header("Cookie", session.cookie)
+            }.bodyAsText()
+            fun configValue(name: String): String? {
+                val at = html.indexOf("\"$name\"")
+                if (at < 0) return null
+                val colon = html.indexOf(':', at)
+                if (colon < 0) return null
+                var start = colon + 1
+                while (start < html.length && html[start].isWhitespace()) start++
+                if (html.startsWith("true", start)) return "true"
+                if (html.startsWith("false", start)) return "false"
+                if (start >= html.length || html[start] != '"') return null
+                val end = html.indexOf('"', start + 1)
+                return if (end > start) html.substring(start + 1, end) else null
+            }
+            if (configValue("LOGGED_IN") != "true") return@runCatching null
+            val id = configValue("DATASYNC_ID")?.substringBefore("||")?.trim()?.takeIf { it.length >= 6 } ?: return@runCatching null
+            WindowsPreferences.saveGoogleSession(session.cookie, session.visitorData, id)
+            id
+        }.getOrNull()
+    }
+
     private suspend fun accountSwitcher(): JsonObject? {
         val session = WindowsPreferences.googleSession() ?: return null
         val text = client.get("https://www.youtube.com/getAccountSwitcherEndpoint") {
@@ -2184,15 +2220,14 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
     }.getOrNull()
 
     /**
-     * iPhone: the music video as YouTube's own iPhone app gets it, an HLS playlist
-     * (picture and sound; the app shows the picture muted), with the User-Agent it is
-     * meant for. Used when the picture stream above cannot be played there. Null when
-     * the video has none.
+     * iPhone: the music video as YouTube's own iPhone app gets it, best first: its HLS
+     * playlist, then a plain MP4 with picture and sound (up to 720p). The app shows the
+     * picture muted. Each with the User-Agent it is meant for; empty when there is none.
      */
-    suspend fun musicVideoHlsUrl(videoId: String): Pair<String, String>? = withContext(IoDispatcher) {
-        val client = PLAYBACK_CLIENTS.firstOrNull { it.name == "IOS" } ?: return@withContext null
+    suspend fun musicVideoIosStreams(videoId: String): List<Pair<String, String>> = withContext(IoDispatcher) {
+        val client = PLAYBACK_CLIENTS.firstOrNull { it.name == "IOS" } ?: return@withContext emptyList()
         runCatching {
-            val visitorData = playbackVisitorData() ?: return@runCatching null
+            val visitorData = playbackVisitorData() ?: return@runCatching emptyList()
             val extras = client.contextExtras.takeIf { it.isNotBlank() }?.let { ",$it" }.orEmpty()
             val bodyStr = """{"context":{"client":{"clientName":"${client.name}","clientVersion":"${client.version}","hl":"en","gl":"US"$extras,"visitorData":${JsonPrimitive(visitorData)}}},"videoId":"$videoId","contentCheckOk":true,"racyCheckOk":true}"""
             val request = OkRequest.Builder()
@@ -2208,12 +2243,24 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 .header("Referer", "https://music.youtube.com/")
                 .post(bodyStr.toOkBody("application/json"))
                 .build()
-            val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching null
+            val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching emptyList()
             val streaming = Json.parseToJsonElement(responseStr).jsonObject["streamingData"] as? JsonObject
-            streaming?.get("hlsManifestUrl")?.jsonPrimitive?.contentOrNull
-                ?.takeIf { it.startsWith("https://") }
-                ?.let { it to client.userAgent }
-        }.getOrNull()
+                ?: return@runCatching emptyList()
+            val hls = streaming["hlsManifestUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") }
+            // Formats with picture and sound together (no separate audio): a plain MP4.
+            val muxed = (streaming["formats"] as? JsonArray).orEmpty()
+                .mapNotNull { it as? JsonObject }
+                .filter { it["mimeType"]?.jsonPrimitive?.contentOrNull.orEmpty().startsWith("video/mp4") }
+                .mapNotNull { format ->
+                    val url = format["url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") } ?: return@mapNotNull null
+                    val height = format["height"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                    height to url
+                }
+                .filter { it.first <= 720 }
+                .maxByOrNull { it.first }
+                ?.second
+            listOfNotNull(hls, muxed).map { it to client.userAgent }
+        }.getOrDefault(emptyList())
     }
 
     fun invalidateMusicVideo(videoId: String) {

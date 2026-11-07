@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -65,15 +68,54 @@ internal fun Modifier.appSafeArea(): Modifier =
         .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars).only(WindowInsetsSides.Bottom))
 
 /**
- * A page (home, library, album, profile...) under the status bar: it starts below it.
- * Portrait pages run on to the bottom of the screen (the floating navigation keeps
- * clear of the home indicator); landscape pages stop above it.
+ * A page and the status bar. Portrait pages that scroll to the top (home, search,
+ * library, albums, artists: [underStatusBar]) run on under it, like the iPhone's own
+ * apps; their header and first rows leave room for it ([LocalEdgeInsets] top). Pages
+ * with a fixed header (profile, settings) start below it. Portrait pages run on to
+ * the bottom of the screen (the floating navigation keeps clear of the home
+ * indicator); landscape pages stop above it.
  */
 @Composable
-internal fun Modifier.pageEdgePadding(compact: Boolean): Modifier {
+internal fun Modifier.pageEdgePadding(compact: Boolean, underStatusBar: Boolean = false): Modifier {
     val edge = LocalEdgeInsets.current
     if (edge.top == 0.dp && edge.bottom == 0.dp) return this
-    return padding(top = edge.top, bottom = if (compact) 0.dp else edge.bottom)
+    return padding(top = if (compact && underStatusBar) 0.dp else edge.top, bottom = if (compact) 0.dp else edge.bottom)
+}
+
+/** Room for the status bar above a portrait page's header or first row (iPhone; zero elsewhere). */
+@Composable
+internal fun statusBarRoom(compact: Boolean): Dp = if (compact) LocalEdgeInsets.current.top else 0.dp
+
+/**
+ * The floating navigation and mini player above the home indicator: a little closer
+ * to it than the whole safe area (as the iPhone's own floating tab bars sit).
+ */
+@Composable
+internal fun dockBottomRoom(): Dp {
+    val bottom = LocalEdgeInsets.current.bottom
+    return if (bottom <= 0.dp) 0.dp else (bottom - 16.dp).coerceAtLeast(0.dp)
+}
+
+/**
+ * A soft shade under the status bar over a page that scrolls beneath it: the clock and
+ * battery stay readable over bright covers (iPhone; nothing elsewhere).
+ */
+@Composable
+internal fun StatusBarScrim(modifier: Modifier = Modifier) {
+    val top = LocalEdgeInsets.current.top
+    if (top <= 0.dp) return
+    androidx.compose.foundation.layout.Box(
+        modifier
+            .fillMaxWidth()
+            .height(top + 18.dp)
+            .background(
+                androidx.compose.ui.graphics.Brush.verticalGradient(
+                    0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                    0.6f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.25f),
+                    1f to androidx.compose.ui.graphics.Color.Transparent,
+                ),
+            ),
+    )
 }
 
 /** The player and lyrics pages: their content stays clear of the status bar and home indicator. */

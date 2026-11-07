@@ -31,7 +31,9 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import com.recordlabs.desktop.data.AppDiagnostics
 import com.recordlabs.desktop.data.IosStreamHeaders
+import com.recordlabs.desktop.platform.currentTimeMillis
 import com.recordlabs.desktop.data.Track
 import com.recordlabs.desktop.data.WindowsAnimatedArtworkRepository
 import com.recordlabs.desktop.data.WindowsMusicRepository
@@ -62,9 +64,11 @@ import platform.AVFoundation.rate
 import platform.AVFoundation.removeOutput
 import platform.AVFoundation.replaceCurrentItemWithPlayerItem
 import platform.AVFoundation.seekToTime
+import platform.AVFoundation.timeControlStatus
 import platform.CoreGraphics.CGSizeMake
 import platform.CoreMedia.CMTimeGetSeconds
 import platform.CoreMedia.CMTimeMake
+import platform.CoreMedia.CMTimeRangeMake
 import platform.CoreVideo.CVPixelBufferGetBaseAddress
 import platform.CoreVideo.CVPixelBufferGetBytesPerRow
 import platform.CoreVideo.CVPixelBufferGetHeight
@@ -86,7 +90,7 @@ import kotlin.math.abs
  * as the cover gives way, and the player card growing and shrinking. (A UIKit video
  * view would sit outside Compose's drawing and miss all of these.)
  */
-internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, maxSide: Double) {
+internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, maxSide: Double, private val label: String = "video", loopMs: Long? = null) {
     private val player: AVPlayer
     private var looper: AVPlayerLooper? = null
     /** Each item the player plays (a looped clip is several copies) with its picture output. */
@@ -110,8 +114,16 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
     private var lastPullAt = 0.0
     /** The picture's bytes, reused from one picture to the next (Skia copies them). */
     private var pixels = ByteArray(0)
+    private val createdAt = CACurrentMediaTime()
+    private var lastStallLogAt = 0.0
+    private var loggedFailure = false
+    private var loggedError = false
+
+    private fun log(message: String) = AppDiagnostics.log("video", "$label: $message")
 
     init {
+        val bare = url.substringBefore('?')
+        log("open ${bare.substringAfter("://").substringBefore('/')}/…${bare.takeLast(32)} (${if (loop) "loop" else "follows the song"})")
         val link = NSURL.URLWithString(url)
         val options: Map<Any?, Any?>? = userAgent?.let {
             mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to it))
@@ -125,8 +137,14 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
         }
         if (loop) {
             val queue = AVQueuePlayer(items = emptyList<AVPlayerItem>())
-            // Seamless loop: AVPlayerLooper queues copies of the clip back to back.
-            looper = AVPlayerLooper.playerLooperWithPlayer(queue, templateItem = newItem())
+            // Seamless loop: AVPlayerLooper queues copies of the clip back to back. Apple's
+            // single-file clips run on ~10 s past the real loop (frames nobody shows): the
+            // loop ends where the clip really does when that is known.
+            looper = if (loopMs != null && loopMs > 1_000L) {
+                AVPlayerLooper(player = queue, templateItem = newItem(), timeRange = CMTimeRangeMake(CMTimeMake(0, 1000), CMTimeMake(loopMs, 1000)))
+            } else {
+                AVPlayerLooper.playerLooperWithPlayer(queue, templateItem = newItem())
+            }
             player = queue
         } else {
             val item = newItem()
@@ -175,11 +193,25 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
         // At most ~30 pictures a second: the clips are 24-30 fps.
         if (now - lastPullAt < 0.03) return
         lastPullAt = now
-        val item = player.currentItem ?: return
-        if (item.status == AVPlayerItemStatusFailed) {
+        val item = player.currentItem
+        if (item != null && item.status == AVPlayerItemStatusFailed) {
             failed = true
+            if (!loggedFailure) {
+                loggedFailure = true
+                log("cannot play: ${item.error?.localizedDescription ?: "unknown error"}")
+            }
             return
         }
+        // Nothing shown after a while: what the player is doing (every 5 s).
+        if (!pictureShown && now - createdAt > 5.0 && now - lastStallLogAt > 5.0) {
+            lastStallLogAt = now
+            log(
+                "no picture yet after ${(now - createdAt).toInt()} s: item ${item?.status ?: "none"}, " +
+                    "playing ${player.timeControlStatus}, rate ${player.rate}, outputs ${outputs.size}, " +
+                    "looping items ${looper?.loopingPlayerItems?.size ?: -1}, error ${item?.error?.localizedDescription ?: "none"}",
+            )
+        }
+        if (item == null) return
         if (outputs.none { it.first === item }) attachOutputs()
         val output = outputs.firstOrNull { it.first === item }?.second ?: return
         val time = output.itemTimeForHostTime(now)
@@ -191,7 +223,10 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
             val height = CVPixelBufferGetHeight(buffer).toInt()
             val rowBytes = CVPixelBufferGetBytesPerRow(buffer).toInt()
             val base = CVPixelBufferGetBaseAddress(buffer)
-            if (width <= 0 || height <= 0 || base == null) return
+            if (width <= 0 || height <= 0 || base == null) {
+                CVPixelBufferUnlockBaseAddress(buffer, kCVPixelBufferLock_ReadOnly)
+                return
+            }
             val size = rowBytes * height
             if (pixels.size != size) pixels = ByteArray(size)
             val bytes = pixels
@@ -206,8 +241,13 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
             recent.addLast(image)
             while (recent.size > 3) recent.removeFirst().close()
             if (aspect == null) aspect = width.toFloat() / height
+            if (!pictureShown) log("first picture ${width}x$height after ${((now - createdAt) * 1000).toInt()} ms")
             pictureShown = true
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            if (!loggedError) {
+                loggedError = true
+                log("picture failed: ${error::class.simpleName}: ${error.message}")
+            }
         } finally {
             CVPixelBufferRelease(buffer)
         }
@@ -311,7 +351,16 @@ internal fun IosAnimatedArtwork(
         }
         var waitMs = 2_500L
         while (isActive && streamUrl == null) {
-            val found = runCatching { WindowsAnimatedArtworkRepository.find(track) }.getOrNull()
+            val started = currentTimeMillis()
+            val lookup = runCatching { WindowsAnimatedArtworkRepository.find(track) }
+            val found = lookup.getOrNull()
+            AppDiagnostics.log(
+                "video",
+                "artwork \"${track.title}\": lookup ${currentTimeMillis() - started} ms, " +
+                    (found?.let { "found ${it.streamUrl.substringBefore('?').takeLast(32)}" }
+                        ?: lookup.exceptionOrNull()?.let { "failed: ${it.message?.take(100)}" }
+                        ?: if (WindowsAnimatedArtworkRepository.isDefinitiveMiss(track)) "this song has none" else "not found yet"),
+            )
             if (found != null) {
                 // An iPhone decodes Apple's HEVC clip itself.
                 streamUrl = found.streamUrl
@@ -331,7 +380,9 @@ internal fun IosAnimatedArtwork(
     Box(modifier.clip(shape)) {
         streamUrl?.let { url ->
             key(url) {
-                val frames = remember(url) { IosVideoFrames(url, userAgent = null, loop = true, maxSide = 720.0) }
+                val frames = remember(url) {
+                    IosVideoFrames(url, userAgent = null, loop = true, maxSide = 720.0, label = "artwork \"${track.title}\"", loopMs = WindowsAnimatedArtworkRepository.clipDurationMs(url))
+                }
                 DisposableEffect(frames) { onDispose { frames.release() } }
                 LaunchedEffect(frames, windowShown) { if (windowShown) frames.play() else frames.pause() }
                 LaunchedEffect(frames.pictureShown) { pictureShown = frames.pictureShown }
@@ -344,9 +395,12 @@ internal fun IosAnimatedArtwork(
                     }
                     if (frames.pictureShown) return@LaunchedEffect
                     pictureShown = false
+                    AppDiagnostics.log("video", "artwork \"${track.title}\": nothing shown from this clip, trying another")
                     val alternate = WindowsAnimatedArtworkRepository.alternateStreamUrl(url)
                     if (alternate != null && alternate != url) streamUrl = alternate
                     else {
+                        // The next lookup picks another of the song's clips (the vertical one).
+                        WindowsAnimatedArtworkRepository.markFailedStreamUrl(url)
                         streamUrl = null
                         if (attempt < 2) attempt++
                     }
@@ -380,30 +434,49 @@ internal fun IosMusicVideo(
     scale: ContentScale,
     onAspectRatio: (Float?) -> Unit,
 ) {
-    // The picture stream, then (if it does not play) YouTube's own iPhone stream.
+    // Where the picture comes from, tried in turn until one shows: 0 = the picture
+    // stream (as on Android), then YouTube's own iPhone streams (HLS, then a plain MP4).
+    var stage by remember(track.id) { mutableStateOf(0) }
     var source by remember(track.id) { mutableStateOf<Pair<String, String?>?>(null) }
-    var useHls by remember(track.id) { mutableStateOf(false) }
+    var iphoneStreams by remember(track.id) { mutableStateOf<List<Pair<String, String>>?>(null) }
     var gaveUp by remember(track.id) { mutableStateOf(false) }
-    LaunchedEffect(track.id, useHls) {
+    fun stageName(at: Int) = when (at) {
+        0 -> "picture stream"
+        1 -> "iPhone stream 1"
+        else -> "iPhone stream $at"
+    }
+    LaunchedEffect(track.id, stage) {
         source = null
-        var waitMs = 1_500L
-        while (isActive && waitMs <= 6_000L) {
-            val found = if (!useHls) {
-                runCatching { IosMusicVideoSource.repository.musicVideoStreamUrl(track.id, MUSIC_VIDEO_HEIGHT) }.getOrNull()
+        if (stage == 0) {
+            var waitMs = 1_500L
+            while (isActive && waitMs <= 3_000L) {
+                val found = runCatching { IosMusicVideoSource.repository.musicVideoStreamUrl(track.id, MUSIC_VIDEO_HEIGHT) }.getOrNull()
                     ?.takeIf { it.isNotBlank() }
-                    ?.let { it to IosStreamHeaders.userAgentFor(it) }
-            } else {
-                runCatching { IosMusicVideoSource.repository.musicVideoHlsUrl(track.id) }.getOrNull()
-                    ?.let { (url, agent) -> url to agent }
+                if (found != null) {
+                    AppDiagnostics.log("video", "music video \"${track.title}\": picture stream found")
+                    source = found to IosStreamHeaders.userAgentFor(found)
+                    return@LaunchedEffect
+                }
+                delay(waitMs)
+                waitMs *= 2
             }
-            if (found != null) {
-                source = found
-                return@LaunchedEffect
-            }
-            delay(waitMs)
-            waitMs *= 2
+            AppDiagnostics.log("video", "music video \"${track.title}\": no picture stream, trying the iPhone streams")
+            stage = 1
+            return@LaunchedEffect
         }
-        if (!useHls) useHls = true else gaveUp = true
+        val streams = iphoneStreams
+            ?: runCatching { IosMusicVideoSource.repository.musicVideoIosStreams(track.id) }.getOrDefault(emptyList())
+                .also {
+                    iphoneStreams = it
+                    AppDiagnostics.log("video", "music video \"${track.title}\": ${it.size} iPhone stream(s)")
+                }
+        val next = streams.getOrNull(stage - 1)
+        if (next == null) {
+            AppDiagnostics.log("video", "music video \"${track.title}\": nothing plays, showing the cover")
+            gaveUp = true
+            return@LaunchedEffect
+        }
+        source = next.first to next.second
     }
     val latestAspect by rememberUpdatedState(onAspectRatio)
     DisposableEffect(track.id) { onDispose { latestAspect(null) } }
@@ -411,7 +484,7 @@ internal fun IosMusicVideo(
     Box(modifier.clip(shape)) {
         source?.let { (url, agent) ->
             key(url) {
-                val frames = remember(url) { IosVideoFrames(url, agent, loop = false, maxSide = 1280.0) }
+                val frames = remember(url) { IosVideoFrames(url, agent, loop = false, maxSide = 1280.0, label = "music video (${stageName(stage)}) \"${track.title}\"") }
                 DisposableEffect(frames) { onDispose { frames.release() } }
                 LaunchedEffect(frames.pictureShown) { pictureShown = frames.pictureShown }
                 LaunchedEffect(frames.aspect) { frames.aspect?.let { latestAspect((it * 100f).toInt() / 100f) } }
@@ -437,11 +510,12 @@ internal fun IosMusicVideo(
                         } else if (frames.rate != 0f) {
                             frames.pause()
                         }
-                        // Nothing shown after a while: the other stream (or the cover).
+                        // Nothing shown after a while of playing (or it failed): the next source.
                         if (!frames.pictureShown) {
-                            waited += 250
-                            if (frames.failed || waited > 12_000L) {
-                                if (!useHls) useHls = true else gaveUp = true
+                            if (playing) waited += 250
+                            if (frames.failed || waited > 8_000L) {
+                                AppDiagnostics.log("video", "music video \"${track.title}\": nothing shown from the ${stageName(stage)}")
+                                stage++
                                 return@LaunchedEffect
                             }
                         }

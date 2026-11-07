@@ -257,9 +257,11 @@ internal object MiniXml {
         return root
     }
 
+    private val entity = Regex("&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);")
+
     private fun decode(value: String): String {
         if (!value.contains('&')) return value
-        return Regex("&(#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);").replace(value) { m ->
+        return entity.replace(value) { m ->
             val v = m.groupValues[1]
             when {
                 v == "amp" -> "&"; v == "lt" -> "<"; v == "gt" -> ">"; v == "quot" -> "\""; v == "apos" -> "'"
