@@ -2227,13 +2227,24 @@ internal fun RecordLabsWindow(
         }
         // Portrait dock: scrolling a page down shrinks the tab bar (Apple Music style).
         var compactDockCollapsed by remember { mutableStateOf(false) }
+        // The page has scrolled further than the search box is tall: only then does the
+        // search box slide away (near the top of the page it stays, as it is still in view).
+        var compactPastHeader by remember { mutableStateOf(false) }
+        val compactScrollDepth = remember { floatArrayOf(0f, 0f) } // [depth px, header height px]
         // Another page starts with the dock and the search box showing.
-        LaunchedEffect(section) { compactDockCollapsed = false }
+        LaunchedEffect(section) {
+            compactDockCollapsed = false
+            compactPastHeader = false
+            compactScrollDepth[0] = 0f
+        }
         val compactDockScroll = remember {
             object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
                 override fun onPostScroll(consumed: androidx.compose.ui.geometry.Offset, available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
                     if (consumed.y < -6f) compactDockCollapsed = true
                     else if (consumed.y > 6f || available.y > 6f) compactDockCollapsed = false
+                    compactScrollDepth[0] = if (available.y > 0f) 0f else (compactScrollDepth[0] - consumed.y).coerceAtLeast(0f)
+                    val past = compactScrollDepth[0] > compactScrollDepth[1]
+                    if (past != compactPastHeader) compactPastHeader = past
                     return androidx.compose.ui.geometry.Offset.Zero
                 }
             }
@@ -3031,8 +3042,9 @@ homeLoading = homeLoading,
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                         // The search box slides away while scrolling down (like the dock shrinking)
                         // and comes back on scrolling up; it stays while it is being used.
+                        compactScrollDepth[1] = with(LocalDensity.current) { (72.dp + LocalEdgeInsets.current.top).toPx() }
                         val compactHeaderHide = androidx.compose.animation.core.animateFloatAsState(
-                            if (compactDockCollapsed && !searchBoxFocused && !landscapeSearchExpanded) 1f else 0f,
+                            if (compactDockCollapsed && (compactPastHeader || !AppPlatform.isIos) && !searchBoxFocused && !landscapeSearchExpanded) 1f else 0f,
                             androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing),
                             label = "compact-header-hide",
                         )
@@ -8833,7 +8845,7 @@ internal fun PlayerPage(
                             // (iPhone: a little lower, closer to the home indicator).
                             Spacer(Modifier.height(if (shortPortrait) 12.dp else if (AppPlatform.isIos) 14.dp else 30.dp))
                         }
-                    } else Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = 52.dp, bottom = if (shortPortrait) 12.dp else if (AppPlatform.isIos) 14.dp else 30.dp)) {
+                    } else Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = if (AppPlatform.isIos) 40.dp else 52.dp, bottom = if (shortPortrait) 12.dp else if (AppPlatform.isIos) 14.dp else 30.dp)) {
                         PortraitQueuePanel(
                             track = track,
                             queue = queue,
@@ -9995,7 +10007,7 @@ internal fun LyricsPage(
                                     val linesModifier = Modifier.weight(1f)
                                     LyricsAtPosition(lyricsPosition, lyricsOffsetMs, lyricGroups) { currentGroupIndex, lyricsPositionMs ->
                                         LyricsLines(
-                                            lyricGroups, currentGroupIndex, lyricsPositionMs, isPlaying && !isLoading, linesModifier, rawLyrics == null, lyricsError, lyricsProvider, lyricsSeek, portraitTextSize, pronunciationEnabled, anchorFraction = 0.06f,
+                                            lyricGroups, currentGroupIndex, lyricsPositionMs, isPlaying && !isLoading, linesModifier, rawLyrics == null, lyricsError, lyricsProvider, lyricsSeek, portraitTextSize, pronunciationEnabled, anchorFraction = if (AppPlatform.isIos) 0.02f else 0.06f,
                                             onRefetch = { rawLyrics = null; manualSelectionGeneration++; refreshGeneration++ },
                                             onSearchLyrics = { showLyricsSearch = true },
                                         )
@@ -11418,6 +11430,17 @@ private fun LyricsLines(
             }
             val contentExtent = kotlin.math.abs((positions[groups.lastIndex] ?: 0f) - (positions[0] ?: 0f))
             manualExtent[0] = contentExtent
+            // Just opened: every line is measured before any is shown, and they take their
+            // places at once (no lines piled up on each other for a moment, then moving apart).
+            val allMeasured = itemHeights.size >= groups.size
+            var linesSettled by remember(groups) { mutableStateOf(false) }
+            LaunchedEffect(allMeasured) {
+                if (allMeasured && !linesSettled) {
+                    androidx.compose.runtime.withFrameNanos { }
+                    androidx.compose.runtime.withFrameNanos { }
+                    linesSettled = true
+                }
+            }
             val clampedManualOffset = userManualOffset.coerceIn(-contentExtent, contentExtent)
 
             val providerTarget = if (activeGapAfter == -1) {
@@ -11485,8 +11508,8 @@ private fun LyricsLines(
                         // spread a little while they travel and settle together.
                         val follow = (index - scrollTargetIndex + 1).coerceAtLeast(0)
                         val moving = remember { androidx.compose.animation.core.Animatable(targetOffset) }
-                        LaunchedEffect(targetOffset) {
-                            if (kotlin.math.abs(moving.value - targetOffset) < 0.5f) {
+                        LaunchedEffect(targetOffset, linesSettled) {
+                            if (!linesSettled || kotlin.math.abs(moving.value - targetOffset) < 0.5f) {
                                 moving.snapTo(targetOffset)
                                 return@LaunchedEffect
                             }
@@ -11529,7 +11552,7 @@ private fun LyricsLines(
                     Modifier.fillMaxWidth()
                         .zIndex(if (index == scrollTargetIndex) 1f else 0f)
                         .offset { IntOffset(0, (animatedOffset + startShift + clampedManualOffset).roundToInt()) }
-                        .graphicsLayer { alpha = soloAlpha * pastAlpha }
+                        .graphicsLayer { alpha = if (allMeasured) soloAlpha * pastAlpha else 0f }
                         .onSizeChanged { itemHeights[index] = it.height },
                     verticalArrangement = Arrangement.spacedBy(5.dp),
                 ) {

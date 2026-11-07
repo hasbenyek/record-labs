@@ -379,33 +379,38 @@ internal fun PortraitBottomBar(
             Icon(appPainter("lyrics_icon.png"), "Lyrics", tint = tint(tab == PortraitTab.Lyrics), modifier = Modifier.size(24.dp))
         }
         val remote = ConnectOutput.remoteName.takeIf { AppPlatform.isIos }
-        PortraitTabButton(false, onDevices, Modifier.weight(1f)) {
-            if (remote != null) {
-                // Playing on another device (Connect), as Apple Music shows AirPlay: a
-                // capsule with this device on the left and the one playing on the right.
-                Row(
-                    Modifier
-                        .height(34.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = 0.16f)),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        Modifier.width(50.dp).fillMaxHeight().clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.14f)),
-                        contentAlignment = Alignment.Center,
+        if (remote != null) {
+            // Playing on another device (Connect), as Apple Music shows AirPlay: a wide
+            // capsule with this device on the left and the one playing on the right.
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                BouncyIconButton(onClick = onDevices, modifier = Modifier.width(112.dp).height(54.dp)) {
+                    Row(
+                        Modifier
+                            .width(104.dp)
+                            .height(36.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.White.copy(alpha = 0.16f)),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.Default.PhoneIphone, "This iPhone", tint = Color.White, modifier = Modifier.size(19.dp))
-                    }
-                    Box(Modifier.width(50.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                        Icon(
-                            if (ConnectOutput.remoteIsPhone) Icons.Default.PhoneIphone else Icons.Default.Computer,
-                            "Playing on $remote",
-                            tint = Color.White,
-                            modifier = Modifier.size(19.dp),
-                        )
+                        Box(
+                            Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.16f)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Default.PhoneIphone, "This iPhone", tint = Color.White, modifier = Modifier.size(19.dp))
+                        }
+                        Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (ConnectOutput.remoteIsPhone) Icons.Default.PhoneIphone else Icons.Default.Computer,
+                                "Playing on $remote",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
-            } else {
+            }
+        } else {
+            PortraitTabButton(false, onDevices, Modifier.weight(1f)) {
                 Icon(appPainter("record_labs_connect.svg"), "Connected devices", tint = tint(false), modifier = Modifier.size(25.dp))
             }
         }

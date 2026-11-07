@@ -161,10 +161,13 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
 
     /** A picture output on every item (AVPlayerLooper makes its copies when it starts). */
     private fun attachOutputs() {
-        val items: List<AVPlayerItem> = looper?.loopingPlayerItems?.filterIsInstance<AVPlayerItem>()
-            ?: listOfNotNull(player.currentItem)
+        // (Items compared with == (isEqual:): the same item read twice from the player is
+        // not always the same Kotlin reference, so === never matched and a new output was
+        // added on every frame while none was ever read: no picture at all.)
+        val items: List<AVPlayerItem> = (looper?.loopingPlayerItems?.filterIsInstance<AVPlayerItem>().orEmpty() +
+            listOfNotNull(player.currentItem)).distinct()
         for (item in items) {
-            if (outputs.any { it.first === item }) continue
+            if (outputs.any { it.first == item }) continue
             val output = AVPlayerItemVideoOutput(
                 pixelBufferAttributes = mapOf<Any?, Any?>(
                     // kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA
@@ -215,20 +218,20 @@ internal class IosVideoFrames(url: String, userAgent: String?, loop: Boolean, ma
             )
         }
         if (item == null) return
-        if (outputs.none { it.first === item }) attachOutputs()
+        if (outputs.none { it.first == item }) attachOutputs()
         // HLS: an output added before the item was ready can stay empty for good; a fresh
         // one is added once it is ready and still shows nothing (twice at most).
         if (item.status == AVPlayerItemStatusReadyToPlay && !pictureShown) {
             if (readyAt == 0.0) readyAt = now
             if (now - readyAt > 1.2 * (reattached + 1) && reattached < 2) {
                 reattached++
-                outputs.filter { it.first === item }.forEach { (old, output) -> old.removeOutput(output) }
-                outputs.removeAll { it.first === item }
+                outputs.filter { it.first == item }.forEach { (old, output) -> old.removeOutput(output) }
+                outputs.removeAll { it.first == item }
                 attachOutputs()
                 log("no picture ${((now - readyAt) * 1000).toInt()} ms after ready: new picture output ($reattached)")
             }
         }
-        val output = outputs.firstOrNull { it.first === item }?.second ?: return
+        val output = outputs.firstOrNull { it.first == item }?.second ?: return
         val time = output.itemTimeForHostTime(now)
         if (!output.hasNewPixelBufferForItemTime(time)) return
         val buffer = output.copyPixelBufferForItemTime(time, itemTimeForDisplay = null) ?: return
