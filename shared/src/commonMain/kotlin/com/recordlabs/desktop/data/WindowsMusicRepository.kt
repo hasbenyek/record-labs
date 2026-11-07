@@ -2322,6 +2322,8 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
     /** iPhone: songs whose MP4 stream did not play (their HLS audio is waited for). */
     private val iosMp4Failed = LockedSet<String>()
     private val iosHlsCache = concurrentMapOf<String, CachedStream>()
+    /** iPhone: YouTube's iPhone answers in a row without HLS audio (after 3 it is not asked for). */
+    @kotlin.concurrent.Volatile private var iosHlsMissing = 0
 
     /**
      * iPhone: the song's sound as YouTube's own iPhone app plays it, an HLS audio-only
@@ -2342,9 +2344,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 .firstNotNullOfOrNull { it["approxDurationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() },
         )
         val master = streaming["hlsManifestUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://") } ?: run {
-            AppDiagnostics.log("playback", "$videoId: no HLS in the iPhone answer")
+            iosHlsMissing += 1
+            AppDiagnostics.log("playback", "$videoId: no HLS in the iPhone answer" + if (iosHlsMissing == 3) " (not asked again)" else "")
             return null
         }
+        iosHlsMissing = 0
         return withContext(IoDispatcher) {
             runCatching {
                 fun get(url: String): String? {
@@ -2385,7 +2389,7 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
     private suspend fun iosFirstStream(videoId: String): CachedStream? {
         val started = currentTimeMillis()
         val result = CompletableDeferred<Pair<String, CachedStream>?>()
-        val hls = if (videoId !in iosHlsFailed) streamResolveScope.async { runCatching { iosHlsAudio(videoId) }.getOrNull() } else null
+        val hls = if (videoId !in iosHlsFailed && iosHlsMissing < 3) streamResolveScope.async { runCatching { iosHlsAudio(videoId) }.getOrNull() } else null
         val mp4 = streamResolveScope.async { runCatching { resolveStream(videoId, allowSlowFallback = true, reason = "play") }.getOrNull() }
         if (hls != null) streamResolveScope.launch { hls.await()?.let { result.complete("HLS" to it) } }
         streamResolveScope.launch {
@@ -2400,8 +2404,45 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             result.complete(null)
         }
         val chosen = result.await()
-        AppDiagnostics.log("playback", "$videoId: ${chosen?.first ?: "no stream"} after ${currentTimeMillis() - started} ms")
-        return chosen?.second
+        val stream = chosen?.second
+        val playlist = if (chosen?.first == "MP4" && stream != null) iosIndexPlaylist(stream) else false
+        val client = stream?.let { StreamIndex.formatOf(it.url)?.client }?.let { " ($it)" }.orEmpty()
+        AppDiagnostics.log(
+            "playback",
+            "$videoId: ${chosen?.first ?: "no stream"}$client after ${currentTimeMillis() - started} ms" +
+                if (chosen?.first == "MP4") (if (playlist == true) ", as HLS pieces" else ", whole file") else "",
+        )
+        return stream
+    }
+
+    /**
+     * iPhone: reads [stream]'s index (one small request) and writes its HLS playlist of
+     * byte ranges (see StreamIndex); false when it has none or it could not be read in time.
+     */
+    private suspend fun iosIndexPlaylist(stream: CachedStream): Boolean {
+        if (StreamIndex.playlistFor(stream.url) != null) return true
+        val format = StreamIndex.formatOf(stream.url) ?: return false
+        return withTimeoutOrNull(2_500L) {
+            withContext(IoDispatcher) {
+                runCatching {
+                    val request = OkRequest.Builder()
+                        .url(stream.url)
+                        .header("User-Agent", stream.userAgent)
+                        .header("Range", "bytes=${format.indexStart}-${format.indexEnd}")
+                        .build()
+                    val bytes = httpClient.newCall(request).execute().use { response ->
+                        if (response.code in 200..299) response.body?.bytes() else null
+                    } ?: return@runCatching false
+                    // A server ignoring the range sends the whole file: the index is at its offset then.
+                    val sidx = if (bytes.size.toLong() > format.indexEnd - format.indexStart + 1 && bytes.size > format.indexEnd) {
+                        bytes.copyOfRange(format.indexStart.toInt(), format.indexEnd.toInt() + 1)
+                    } else bytes
+                    val playlist = StreamIndex.playlist(stream.url, format.initEnd, format.indexStart, sidx) ?: return@runCatching false
+                    StreamIndex.putPlaylist(stream.url, playlist)
+                    true
+                }.getOrDefault(false)
+            }
+        } ?: false
     }
 
     /**
@@ -2409,6 +2450,10 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
      * gets another source (HLS, then a fresh MP4 race).
      */
     fun reportPlaybackFailure(videoId: String, url: String) {
+        val hadPieces = StreamIndex.playlistFor(url) != null
+        StreamIndex.reportFailure(url)
+        // Played as pieces: the same stream is tried as a whole file first.
+        if (hadPieces) return
         val hls = iosHlsCache[videoId]
         if (hls != null && hls.url == url) {
             iosHlsFailed.add(videoId)
@@ -2521,6 +2566,17 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         )
 
         val url = bestFormat["url"]?.jsonPrimitive?.contentOrNull
+        // iPhone: where the stream's header and index are (see StreamIndex).
+        if (AppPlatform.isIos && url != null) {
+            fun range(name: String, key: String) =
+                (bestFormat[name] as? JsonObject)?.get(key)?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+            val initEnd = range("initRange", "end")
+            val indexStart = range("indexRange", "start")
+            val indexEnd = range("indexRange", "end")
+            if (initEnd != null && indexStart != null && indexEnd != null && indexEnd > indexStart) {
+                StreamIndex.record(url, StreamIndex.Format(initEnd, indexStart, indexEnd, playbackClient.name))
+            }
+        }
         // Direct URLs from clients that never use player.js are already playable.
         // Previously they still waited on the shared player.js/Deno lock, whose
         // first use downloads the watch page and player.js before any song starts.

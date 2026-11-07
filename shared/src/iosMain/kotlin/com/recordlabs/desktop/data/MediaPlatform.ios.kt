@@ -24,10 +24,19 @@ actual object MediaPlatform {
         return remoteUrl
     }
     actual fun canStartStream(remoteUrl: String, userAgent: String): Boolean = runCatching {
+        // The stream's index doubles as the check: one request finds that the stream
+        // answers and gives the pieces for its HLS playlist (see StreamIndex).
+        val format = StreamIndex.formatOf(remoteUrl)
+        val range = if (format != null) "bytes=${format.indexStart}-${format.indexEnd}" else "bytes=0-1023"
         val response = PlatformHttp.execute(
-            HttpRequest(remoteUrl, "GET", mapOf("User-Agent" to userAgent, "Range" to "bytes=0-1023"), timeoutMs = 8_000L),
+            HttpRequest(remoteUrl, "GET", mapOf("User-Agent" to userAgent, "Range" to range), timeoutMs = 8_000L),
         )
-        response.code == 200 || response.code == 206
+        val ok = response.code == 200 || response.code == 206
+        if (ok && format != null && response.code == 206) {
+            StreamIndex.playlist(remoteUrl, format.initEnd, format.indexStart, response.body)
+                ?.let { StreamIndex.putPlaylist(remoteUrl, it) }
+        }
+        ok
     }.getOrDefault(false)
     actual fun newPipeAudioStream(videoId: String): String? = null
     actual fun newPipeRelatedTracks(videoId: String): List<Track> = emptyList()

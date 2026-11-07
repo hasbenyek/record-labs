@@ -2447,6 +2447,21 @@ internal fun RecordLabsWindow(
             profilePage = ProfilePage.ListenTogether
             ListenTogetherUi.settingsOpen = false
         }
+        // Portrait: one dock carried from page to page (home, a catalog page, Profile,
+        // Listen Together), so its highlight, its stretch and its size go on smoothly
+        // from one page to the next instead of starting over on each page's own dock.
+        val sharedDock = remember {
+            androidx.compose.runtime.movableContentOf { place: DockPlace ->
+                CompactPlayerDock(
+                    track = place.track, isPlaying = place.isPlaying, isLoading = place.isLoading, notice = place.notice,
+                    onPlayPause = place.onPlayPause, onNext = place.onNext, onOpenPlayer = place.onOpenPlayer,
+                    selected = place.selected, isProfileSelected = place.isProfileSelected, homeLoading = place.homeLoading,
+                    collapsed = place.collapsed, onSelect = place.onSelect, onProfile = place.onProfile,
+                    onListenTogether = place.onListenTogether, onExpand = place.onExpand,
+                    listenTogetherSelected = place.listenTogetherSelected,
+                )
+            }
+        }
         // Mouse back button (desktop only).
         DesktopMouseBackButton {
             if (MusicVideoFullscreen.trackId != null) {
@@ -2771,14 +2786,14 @@ internal fun RecordLabsWindow(
                             if (compact) {
                                 // Portrait: the same dock as the other portrait pages.
                                 CompactBottomBar(Modifier.align(Alignment.BottomCenter), catalogBackdrop) {
-                                    CompactPlayerDock(
+                                    sharedDock(DockPlace(
                                         track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
                                         onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
                                         onOpenPlayer = { pushNavigation(); originSection = section; playerDestination = lastPlayerDestination },
                                         selected = section, isProfileSelected = false, homeLoading = homeLoading,
                                         collapsed = compactDockCollapsed, onSelect = performNavSelect, onProfile = { pushNavigation(); profilePage = ProfilePage.Home },
                                         onListenTogether = ::openListenTogether, onExpand = { compactDockCollapsed = false },
-                                    )
+                                    ))
                                 }
                             } else Box(Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(horizontal = 18.dp, vertical = 10.dp)) {
                                 PlaybackPositionScope(playbackPositionState) { positionMs ->
@@ -2868,7 +2883,7 @@ internal fun RecordLabsWindow(
                                     androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) { profileContent() }
                                 }
                                 CompactBottomBar(Modifier.align(Alignment.BottomCenter), profileBackdrop) {
-                                    CompactPlayerDock(
+                                    sharedDock(DockPlace(
                                         track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
                                         onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
                                         onOpenPlayer = { pushNavigation(); originSection = section; playerDestination = lastPlayerDestination },
@@ -2878,7 +2893,7 @@ internal fun RecordLabsWindow(
                                         onProfile = { if (profilePage == ProfilePage.ListenTogether) { pushNavigation(); profilePage = ProfilePage.Home } },
                                         onListenTogether = ::openListenTogether, onExpand = { compactDockCollapsed = false },
                                         listenTogetherSelected = profilePage == ProfilePage.ListenTogether,
-                                    )
+                                    ))
                                 }
                             }
                                                 if (!compact && (playerDestination == null || playerHeaderVisible.value)) LandscapeHeader(
@@ -3004,14 +3019,14 @@ homeLoading = homeLoading,
                             glassBackdrop = pageBackdrop,
                         )
                         CompactBottomBar(Modifier.align(Alignment.BottomCenter), pageBackdrop) {
-                                    CompactPlayerDock(
+                                    sharedDock(DockPlace(
                                         track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
                                         onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
                                         onOpenPlayer = { pushNavigation(); originSection = section; playerDestination = lastPlayerDestination },
                                         selected = section, isProfileSelected = false, homeLoading = homeLoading,
                                         collapsed = compactDockCollapsed, onSelect = performNavSelect, onProfile = { pushNavigation(); profilePage = ProfilePage.Home },
                                         onListenTogether = ::openListenTogether, onExpand = { compactDockCollapsed = false },
-                                    )
+                                    ))
                                 }
                         }
 
@@ -4374,6 +4389,26 @@ private fun CompactPlayerDockContent(
 
 private val DockBarHeight = 58.dp
 
+/** What the shared portrait dock shows on the current page (see sharedDock). */
+internal class DockPlace(
+    val track: Track?,
+    val isPlaying: Boolean,
+    val isLoading: Boolean,
+    val notice: String?,
+    val onPlayPause: () -> Unit,
+    val onNext: () -> Unit,
+    val onOpenPlayer: () -> Unit,
+    val selected: AppSection?,
+    val isProfileSelected: Boolean,
+    val homeLoading: Boolean,
+    val collapsed: Boolean,
+    val onSelect: (AppSection) -> Unit,
+    val onProfile: () -> Unit,
+    val onListenTogether: () -> Unit,
+    val onExpand: () -> Unit,
+    val listenTogetherSelected: Boolean = false,
+)
+
 /** Liquid-glass surface of the dock: see-through grey, a thin light edge and a soft top highlight. */
 @Composable
 private fun DockGlass(shape: androidx.compose.ui.graphics.Shape, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
@@ -4472,15 +4507,10 @@ private fun DockTabBar(selectedIndex: Int, onSelectIndex: (Int) -> Unit) {
                             // Decided from the finger's last place (the highlight may still be a frame behind).
                             val target = dragPosition[0].roundToInt().coerceIn(0, tabs.lastIndex)
                             dragging = false
-                            // Listen Together lives on another page with its own tab bar: going
-                            // there (or back) waits until the highlight has arrived, so the new
-                            // bar starts where this one ended instead of from halfway.
-                            val otherBar = target != currentIndex && (target == 2 || currentIndex == 2)
-                            scope.launch {
-                                position.animateTo(target.toFloat(), spring(dampingRatio = 0.72f, stiffness = 420f))
-                                if (otherBar) latestSelect(target)
-                            }
-                            if (target != currentIndex && !otherBar) latestSelect(target)
+                            // The page changes at once (also to and from Listen Together: the
+                            // dock is carried along, see sharedDock) while the highlight settles.
+                            scope.launch { position.animateTo(target.toFloat(), spring(dampingRatio = 0.72f, stiffness = 420f)) }
+                            if (target != currentIndex) latestSelect(target)
                         },
                         onDragCancel = {
                             dragging = false

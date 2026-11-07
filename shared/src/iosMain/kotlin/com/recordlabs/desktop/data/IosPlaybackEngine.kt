@@ -330,7 +330,10 @@ internal class IosPlaybackEngine : PlaybackEngine {
         val options = IosStreamHeaders.userAgentFor(url)?.let { agent ->
             mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to agent))
         }
-        val asset = AVURLAsset(uRL = link, options = options)
+        // YouTube's fragmented MP4 as HLS pieces when its index was read (see StreamIndex):
+        // starts and seeks at once, with its true length.
+        val asset = StreamIndex.playlistFor(url)?.let { sharedIndexPlaylists.asset(url, it, options) }
+            ?: AVURLAsset(uRL = link, options = options)
         return AVPlayerItem(asset = asset).also { it.audioTimePitchAlgorithm = AVAudioTimePitchAlgorithmSpectral }
     }
 
