@@ -1188,7 +1188,7 @@ internal fun RecordLabsWindow(
                                 }
                                 retries++
                                 lastRetryAt = now
-                                repository.reportPlaybackFailure(track.id, url)
+                                repository.reportPlaybackFailure(track.id, url, afterSound = progressed)
                                 val next = runCatching { repository.playbackStreamUrl(track) }.getOrNull()
                                 if (requestId != playbackRequestId || currentTrack?.id != track.id) break
                                 if (next == null) {
@@ -1771,21 +1771,38 @@ internal fun RecordLabsWindow(
             // Refresh the account header before starting discovery so Windows
             // and Android can match the same unique YouTube channel handle even
             // when one side does not expose an email or DATASYNC_ID.
-            val profile = runCatching { repository.googleAccountProfile() }.getOrNull()
-            // iPhone: a session saved without the account's sync id (its login can read the
-            // page before it is there) gets it now: without it the Connect relay is off.
-            if (AppPlatform.isIos && WindowsPreferences.googleSession()?.dataSyncId.isNullOrBlank()) {
-                val recovered = runCatching { repository.recoverDataSyncId() }.getOrNull()
-                com.recordlabs.desktop.data.AppDiagnostics.log("connect", if (recovered != null) "account sync id read from YouTube Music" else "no account sync id (relay stays off)")
+            suspend fun gatherAccountKeys(): List<String> {
+                val profile = runCatching { repository.googleAccountProfile() }
+                    .onFailure { com.recordlabs.desktop.data.AppDiagnostics.log("connect", "account profile failed: ${it::class.simpleName}: ${it.message}") }
+                    .getOrNull()
+                if (AppPlatform.isIos && profile == null) {
+                    com.recordlabs.desktop.data.AppDiagnostics.log("connect", "account profile: none (signed in: ${WindowsPreferences.googleSession() != null})")
+                }
+                // iPhone: a session saved without the account's sync id (its login can read the
+                // page before it is there) gets it now: without it the Connect relay is off.
+                if (AppPlatform.isIos && WindowsPreferences.googleSession()?.dataSyncId.isNullOrBlank()) {
+                    val recovered = runCatching { repository.recoverDataSyncId() }.getOrNull()
+                    com.recordlabs.desktop.data.AppDiagnostics.log("connect", if (recovered != null) "account sync id read from YouTube Music" else "no account sync id (relay stays off)")
+                }
+                return buildList {
+                    (profile?.email ?: WindowsPreferences.googleAccountEmail()).trim().takeIf(String::isNotBlank)
+                        ?.let { add("email:$it") }
+                    (profile?.channelHandle ?: WindowsPreferences.googleAccountChannelHandle())
+                        .trim().takeIf(String::isNotBlank)
+                        ?.let { add("channel:$it") }
+                    WindowsPreferences.googleSession()?.dataSyncId?.trim()?.takeIf(String::isNotBlank)
+                        ?.let { add("sync:$it") }
+                }
             }
-            val accountKeys = buildList {
-                (profile?.email ?: WindowsPreferences.googleAccountEmail()).trim().takeIf(String::isNotBlank)
-                    ?.let { add("email:$it") }
-                (profile?.channelHandle ?: WindowsPreferences.googleAccountChannelHandle())
-                    .trim().takeIf(String::isNotBlank)
-                    ?.let { add("channel:$it") }
-                WindowsPreferences.googleSession()?.dataSyncId?.trim()?.takeIf(String::isNotBlank)
-                    ?.let { add("sync:$it") }
+            var accountKeys = gatherAccountKeys()
+            // iPhone: the account could not be read yet (the network still waking up, a
+            // slow answer): asked again a few times instead of leaving Connect off for good.
+            var retry = 0
+            while (accountKeys.isEmpty() && AppPlatform.isIos && WindowsPreferences.googleSession() != null && retry < 6) {
+                retry++
+                com.recordlabs.desktop.data.AppDiagnostics.log("connect", "no Google account details yet: trying again (${retry})")
+                kotlinx.coroutines.delay(8_000L * retry)
+                accountKeys = gatherAccountKeys()
             }
             if (accountKeys.isEmpty()) {
                 com.recordlabs.desktop.data.AppDiagnostics.log("connect", "not started: no Google account details (email, channel or sync id) yet")

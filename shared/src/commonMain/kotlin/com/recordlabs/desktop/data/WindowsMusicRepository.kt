@@ -1288,6 +1288,14 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         accounts?.let(::profileFromAccountItems)?.let { return it }
         val switcher = runCatching { accountSwitcher() }.getOrNull()
         switcher?.let(::profileFromAccountItems)?.let { return it }
+        AppDiagnostics.log(
+            "connect",
+            "account menu: " + when {
+                menu == null -> "no answer"
+                menu.toString().contains("signInEndpoint") -> "signed out (the saved session no longer works: sign in again)"
+                else -> "no account in it"
+            },
+        )
         menu?.let { saveAccountMenuForDebug(it, "account-menu-debug.json") }
         accounts?.let { saveAccountMenuForDebug(it, "accounts-list-debug.json") }
         switcher?.let { saveAccountMenuForDebug(it, "account-switcher-debug.json") }
@@ -1324,11 +1332,17 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 val end = html.indexOf('"', start + 1)
                 return if (end > start) html.substring(start + 1, end) else null
             }
-            if (configValue("LOGGED_IN") != "true") return@runCatching null
-            val id = configValue("DATASYNC_ID")?.substringBefore("||")?.trim()?.takeIf { it.length >= 6 } ?: return@runCatching null
+            if (configValue("LOGGED_IN") != "true") {
+                AppDiagnostics.log("connect", "YouTube Music answers signed out with this session (LOGGED_IN ${configValue("LOGGED_IN")}, page ${html.length} chars): sign in again?")
+                return@runCatching null
+            }
+            val id = configValue("DATASYNC_ID")?.substringBefore("||")?.trim()?.takeIf { it.length >= 6 } ?: run {
+                AppDiagnostics.log("connect", "YouTube Music page has no DATASYNC_ID")
+                return@runCatching null
+            }
             WindowsPreferences.saveGoogleSession(session.cookie, session.visitorData, id)
             id
-        }.getOrNull()
+        }.onFailure { AppDiagnostics.log("connect", "reading the sync id failed: ${it::class.simpleName}: ${it.message}") }.getOrNull()
     }
 
     private suspend fun accountSwitcher(): JsonObject? {
@@ -1888,7 +1902,17 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             // iPhone: no player.js here, so the web/TV clients' URLs (their `n` unsolved) are
             // slowed to a crawl by YouTube or refused part way: only the direct clients.
             val innerTubeJobs = PLAYBACK_CLIENTS
-                .filter { AppSettings.isStreamSourceEnabled(it.name) && !(AppPlatform.isIos && it.requiresJsPlayer) }
+                .filter {
+                    AppSettings.isStreamSourceEnabled(it.name) && !(
+                        AppPlatform.isIos && (
+                            it.requiresJsPlayer ||
+                                // The iPhone client's own addresses stop after about a minute
+                                // without YouTube's proof-of-origin token ("no permission").
+                                it.name == "IOS" ||
+                                (iosClientFailures[it.name] ?: 0) >= 2
+                            )
+                        )
+                }
                 .map { playbackClient ->
                 race.async {
                     val candidate = fetchInnerTubeUrl(videoId, playbackClient)?.let { url ->
@@ -2319,6 +2343,8 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
 
     /** iPhone: songs whose HLS audio did not play (the MP4 streams are used for them). */
     private val iosHlsFailed = LockedSet<String>()
+    /** iPhone: stream clients whose addresses YouTube stopped serving part way through a song. */
+    private val iosClientFailures = concurrentMapOf<String, Int>()
     /** iPhone: songs whose MP4 stream did not play (their HLS audio is waited for). */
     private val iosMp4Failed = LockedSet<String>()
     private val iosHlsCache = concurrentMapOf<String, CachedStream>()
@@ -2449,11 +2475,17 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
      * iPhone: [url] did not play (failed, or nothing after a while): the next song request
      * gets another source (HLS, then a fresh MP4 race).
      */
-    fun reportPlaybackFailure(videoId: String, url: String) {
-        val hadPieces = StreamIndex.playlistFor(url) != null
-        StreamIndex.reportFailure(url)
-        // Played as pieces: the same stream is tried as a whole file first.
-        if (hadPieces) return
+    fun reportPlaybackFailure(videoId: String, url: String, afterSound: Boolean = false) {
+        StreamIndex.reportFailure(url, beforeSound = !afterSound)
+        // The client whose address failed part way (YouTube refusing it after a minute):
+        // after twice, the iPhone stops asking it for this session.
+        StreamIndex.formatOf(url)?.client?.let { client ->
+            if (afterSound) {
+                val count = (iosClientFailures[client] ?: 0) + 1
+                iosClientFailures[client] = count
+                AppDiagnostics.log("playback", "$client address refused part way ($count)" + if (count >= 2) ": not used again" else "")
+            }
+        }
         val hls = iosHlsCache[videoId]
         if (hls != null && hls.url == url) {
             iosHlsFailed.add(videoId)

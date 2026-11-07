@@ -672,6 +672,12 @@ object WindowsAnimatedArtworkRepository {
                     val response: JsonObject = responseHttp.body()
                     val matchedTitle = response["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     val matchedArtist = response["artist"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    AppDiagnostics.log(
+                        "video",
+                        "artwork query \"${candidate.title}\" / ${candidate.artist}${candidate.album?.let { " / $it" }.orEmpty()}: " +
+                            "HTTP ${responseHttp.status.value}, got \"$matchedTitle\" by $matchedArtist, " +
+                            "clip ${listOf("animated", "animatedVertical", "videoUrl", "videoUrlVertical").count { response[it]?.jsonPrimitive?.contentOrNull != null }}",
+                    )
 
                     val titleMatches = metadataMatches(track.title, matchedTitle) || metadataMatches(cleanTitle, matchedTitle)
                     val artistMatches = metadataMatches(track.artist, matchedArtist) || metadataMatches(primaryArtist, matchedArtist)

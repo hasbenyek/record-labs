@@ -44,11 +44,14 @@ object StreamIndex {
     @kotlin.concurrent.Volatile private var failures = 0
 
     /**
-     * [url] did not play: when it was played as HLS pieces, the next try plays the whole
-     * file; after two such failures the pieces are not used again until the app restarts.
+     * [url] did not play: its playlist is dropped. A stream that failed before any sound
+     * counts against the pieces themselves; after two such failures the pieces are not used
+     * again until the app restarts. One that stopped part way (YouTube refusing the address
+     * later on) says nothing about the pieces.
      */
-    fun reportFailure(url: String) {
+    fun reportFailure(url: String, beforeSound: Boolean = true) {
         if (playlists.remove(url) == null) return
+        if (!beforeSound) return
         failures += 1
         AppDiagnostics.log("playback", "HLS pieces did not play ($failures)" + if (failures >= 2) ": whole files from now on" else "")
     }
