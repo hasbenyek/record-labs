@@ -4,6 +4,12 @@ package com.recordlabs.desktop
 
 import com.recordlabs.desktop.data.AppDiagnostics
 import platform.Foundation.NSDate
+import platform.Foundation.NSException
+import platform.Foundation.NSSetUncaughtExceptionHandler
+import platform.Foundation.NSString
+import platform.Foundation.NSUTF8StringEncoding
+import platform.Foundation.stringWithContentsOfFile
+import kotlin.native.setUnhandledExceptionHook
 import platform.Foundation.NSDateFormatter
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSFileManager
@@ -29,9 +35,44 @@ internal object IosDiagnostics {
         "$directory/Record Labs log.txt"
     }
 
+    private val crashPath: String? by lazy { path?.let { it.removeSuffix("Record Labs log.txt") + "Record Labs last close.txt" } }
+
     fun install() {
         AppDiagnostics.sink = { tag, message -> write(tag, message) }
         write("app", "Record Labs ${com.recordlabs.desktop.data.AppInfo.version} started on ${com.recordlabs.desktop.platform.AppPlatform.deviceName}")
+        // The app closed by an error last time: what it was, and what happened just before
+        // (the diary of that run is gone), shown in this run's diagnostics.
+        crashPath?.let { target ->
+            runCatching {
+                val text = NSString.stringWithContentsOfFile(target, NSUTF8StringEncoding, null)
+                if (!text.isNullOrBlank()) {
+                    text.lineSequence().filter { it.isNotBlank() }.forEach { AppDiagnostics.log("crash", it) }
+                    platform.posix.remove(target)
+                }
+            }
+        }
+        @OptIn(kotlin.experimental.ExperimentalNativeApi::class)
+        setUnhandledExceptionHook { error ->
+            recordClose("Kotlin ${error::class.simpleName}: ${error.message}\n${error.stackTraceToString().take(2_500)}")
+            kotlin.native.terminateWithUnhandledException(error)
+        }
+        NSSetUncaughtExceptionHandler(kotlinx.cinterop.staticCFunction { error: NSException? ->
+            IosDiagnostics.recordClose(
+                "iOS ${error?.name}: ${error?.reason}\n" +
+                    (error?.callStackSymbols?.take(25)?.joinToString("\n") { it.toString() } ?: ""),
+            )
+        })
+    }
+
+    /** Written at once (the app is about to close): the error and the last lines before it. */
+    fun recordClose(what: String) {
+        val target = crashPath ?: return
+        runCatching {
+            val before = AppDiagnostics.allRecent().lines().takeLast(30)
+            val file = platform.posix.fopen(target, "w") ?: return
+            platform.posix.fputs("closed by an error: $what\n--- just before:\n" + before.joinToString("\n") + "\n", file)
+            platform.posix.fclose(file)
+        }
     }
 
     /** The last lines with [tag] (newest last), for the screen. */

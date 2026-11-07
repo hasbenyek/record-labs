@@ -36,7 +36,6 @@ import platform.AVFoundation.replaceCurrentItemWithPlayerItem
 import platform.AVFoundation.seekToTime
 import platform.AVFoundation.timeControlStatus
 import platform.AVFoundation.volume
-import platform.AVFoundation.muted
 import platform.CoreMedia.CMTime
 import platform.CoreMedia.CMTimeGetSeconds
 import platform.CoreMedia.CMTimeMake
@@ -200,7 +199,18 @@ internal class IosPlaybackEngine : PlaybackEngine {
             wantsPlay = false
             player.pause()
             publish()
-            onPlaybackEnded?.invoke()
+            endSong()
+        }
+    }
+
+    /**
+     * The song ended: the app goes on to the next one. A failure there is written to
+     * the diagnostics instead of closing the app (an error inside an iOS callback does).
+     */
+    private fun endSong() {
+        AppDiagnostics.log("playback", "\"${currentTrack?.title}\": ended")
+        runCatching { onPlaybackEnded?.invoke() }.onFailure {
+            AppDiagnostics.log("playback", "going on to the next song failed: ${it::class.simpleName}: ${it.message}")
         }
     }
 
@@ -297,17 +307,18 @@ internal class IosPlaybackEngine : PlaybackEngine {
             publish()
             return@onMain
         }
-        // The next song, already loading in the background (preload): it starts at once.
-        val ready = preloaded?.takeIf { it.first == track.id && it.second.status != AVPlayerItemStatusFailed }?.second
+        // The next song, already loaded in the background (preload): it starts sooner.
+        // (A new item from its asset: an item that ever had another player may not be
+        // given to this one, which made the app close at the end of a song.)
+        val ready = preloaded?.takeIf { it.first == track.id }?.second
         preloaded = null
-        preloadPlayer.replaceCurrentItemWithPlayerItem(null)
         if (ready != null) AppDiagnostics.log("playback", "\"${track.title}\": preloaded stream used")
-        val item = ready ?: makeItem(link, url)
+        val item = if (ready != null) itemFor(ready) else makeItem(link, url)
         itemObservers = listOf(
             NSNotificationCenter.defaultCenter.addObserverForName(AVPlayerItemDidPlayToEndTimeNotification, item, NSOperationQueue.mainQueue) { _ ->
                 wantsPlay = false
                 publish()
-                onPlaybackEnded?.invoke()
+                endSong()
             },
             NSNotificationCenter.defaultCenter.addObserverForName(AVPlayerItemFailedToPlayToEndTimeNotification, item, NSOperationQueue.mainQueue) { _ ->
                 lastError = "Playback stopped (network)"
@@ -325,33 +336,33 @@ internal class IosPlaybackEngine : PlaybackEngine {
         updateNowPlaying(force = true)
     }
 
-    private fun makeItem(link: NSURL, url: String): AVPlayerItem {
+    private fun makeItem(link: NSURL, url: String): AVPlayerItem = itemFor(makeAsset(link, url))
+
+    private fun itemFor(asset: AVURLAsset): AVPlayerItem =
+        AVPlayerItem(asset = asset).also { it.audioTimePitchAlgorithm = AVAudioTimePitchAlgorithmSpectral }
+
+    private fun makeAsset(link: NSURL, url: String): AVURLAsset {
         // YouTube's stream URLs only answer the app (client) they were made for.
         val options = IosStreamHeaders.userAgentFor(url)?.let { agent ->
             mapOf<Any?, Any?>("AVURLAssetHTTPHeaderFieldsKey" to mapOf("User-Agent" to agent))
         }
         // YouTube's fragmented MP4 as HLS pieces when its index was read (see StreamIndex):
         // starts and seeks at once, with its true length.
-        val asset = StreamIndex.playlistFor(url)?.let { sharedIndexPlaylists.asset(url, it, options) }
+        return StreamIndex.playlistFor(url)?.let { sharedIndexPlaylists.asset(url, it, options) }
             ?: AVURLAsset(uRL = link, options = options)
-        return AVPlayerItem(asset = asset).also { it.audioTimePitchAlgorithm = AVAudioTimePitchAlgorithmSpectral }
     }
 
-    /** A silent player that loads the next song while this one plays (an item buffers once it has a player). */
-    private val preloadPlayer = AVPlayer().apply {
-        muted = true
-        automaticallyWaitsToMinimizeStalling = false
-    }
-    private var preloaded: Pair<String, AVPlayerItem>? = null
+    /** The next song's asset, already loading (its playlist and length are read ahead). */
+    private var preloaded: Pair<String, AVURLAsset>? = null
 
     /** Starts loading [trackId]'s stream [url], so [play] can start it at once. */
     fun preload(trackId: String, url: String) = onMain {
         if (trackId == currentTrack?.id || preloaded?.first == trackId) return@onMain
         if (url.startsWith("file://")) return@onMain
         val link = NSURL.URLWithString(url) ?: return@onMain
-        val item = makeItem(link, url)
-        preloadPlayer.replaceCurrentItemWithPlayerItem(item)
-        preloaded = trackId to item
+        val asset = makeAsset(link, url)
+        asset.loadValuesAsynchronouslyForKeys(listOf("playable", "duration"), null)
+        preloaded = trackId to asset
     }
 
     override fun pause() = onMain {

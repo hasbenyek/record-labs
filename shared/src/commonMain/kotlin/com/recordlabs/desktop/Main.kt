@@ -1059,6 +1059,8 @@ internal fun RecordLabsWindow(
             notifyRoom: Boolean = true,
             startPlaying: Boolean = true,
             onPrepared: (() -> Unit)? = null,
+            /** Where in the song to start (iPhone: a song picked up again after its stream failed). */
+            startAtMs: Long = 0L,
         ) {
             val track = if (rawTrack.artworkUrl.isNullOrBlank() && !rawTrack.localPath.isNullOrBlank()) {
                 val artUrl = runCatching {
@@ -1080,7 +1082,7 @@ internal fun RecordLabsWindow(
             currentTrack = track
             isPlaying = startPlaying
             playbackLoading = true
-            playbackPositionMs = 0L
+            playbackPositionMs = startAtMs
             playbackDurationMs = track.durationMs.takeIf { !playbackLoading || it != 180_000L } ?: 0L
             // iPhone: the real length, when this song's stream was already found (the time
             // left shows from the start).
@@ -1111,7 +1113,7 @@ internal fun RecordLabsWindow(
                         playbackDurationMs = length
                         if (currentTrack?.id == track.id) currentTrack = currentTrack?.copy(durationMs = length)
                     }
-                    mediaPlayer.play(track, rawUrl)
+                    mediaPlayer.play(track, rawUrl, startAtMs)
                     // iPhone: the next song's stream is found and loaded into a silent player
                     // while this one plays, so next starts at once (like the Android and
                     // desktop players' prefetch).
@@ -1140,6 +1142,7 @@ internal fun RecordLabsWindow(
                             // gets another source after 5 s instead of 12).
                             var progressed = false
                             var startPosition = -1L
+                            var lastRetryAt = 0L
                             while (requestId == playbackRequestId && currentTrack?.id == track.id) {
                                 delay(500L)
                                 if (requestId != playbackRequestId || currentTrack?.id != track.id) break
@@ -1157,6 +1160,9 @@ internal fun RecordLabsWindow(
                                     lastPosition = position
                                     lastProgressAt = now
                                 }
+                                // Playing well again for a while after a retry: a later stop (part way
+                                // through a long song) gets its own retries.
+                                if (retries > 0 && progressed && now - lastRetryAt > 20_000L) retries = 0
                                 // The song's end (nothing more to play) is not a stall.
                                 val atEnd = mediaPlayer.durationMs > 0L && position >= mediaPlayer.durationMs - 3_000L
                                 val stallLimit = if (progressed) 12_000L else 5_000L
@@ -1176,6 +1182,7 @@ internal fun RecordLabsWindow(
                                     break
                                 }
                                 retries++
+                                lastRetryAt = now
                                 repository.reportPlaybackFailure(track.id, url)
                                 val next = runCatching { repository.playbackStreamUrl(track) }.getOrNull()
                                 if (requestId != playbackRequestId || currentTrack?.id != track.id) break
@@ -1608,6 +1615,19 @@ internal fun RecordLabsWindow(
                 playbackLoading = false
                 playbackNotice = null
                 WindowsListenTogetherClient.broadcastPlayback("pause", track, playbackPositionMs)
+                return
+            }
+            // iPhone: a song whose stream failed (stopped part way and could not go on)
+            // starts again from where it was, from a fresh stream, with its watcher.
+            if (AppPlatform.isIos && !WindowsListenTogetherClient.isGuestNow() &&
+                (mediaPlayer.currentTrack?.id != track.id || mediaPlayer.lastError != null) &&
+                track.localPath.isNullOrBlank()
+            ) {
+                com.recordlabs.desktop.data.AppDiagnostics.log(
+                    "playback",
+                    "\"${track.title}\": play pressed, ${if (mediaPlayer.lastError != null) "stream had failed" else "not loaded"}: starting again at ${playbackPositionMs / 1000} s",
+                )
+                beginPlayback(track, notifyRoom = false, startAtMs = playbackPositionMs)
                 return
             }
             if (mediaPlayer.currentTrack?.id == track.id) {
