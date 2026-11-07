@@ -26,6 +26,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import kotlinx.coroutines.launch
@@ -117,7 +118,6 @@ import androidx.compose.material.Slider
 import androidx.compose.material.SliderDefaults
 import androidx.compose.material.Surface
 import androidx.compose.material.Switch
-import androidx.compose.material.Text
 
 
 import androidx.compose.material.TextField
@@ -125,6 +125,7 @@ import androidx.compose.material.TextFieldDefaults
 import androidx.compose.material.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.PhoneIphone
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PersonRemove
@@ -469,9 +470,6 @@ internal fun AlertDialog(
     text: (@Composable () -> Unit)? = null,
 ) = GlassDialog(onDismissRequest, confirmButton, modifier, dismissButton, title, text)
 
-/** The app's own text: San Francisco on the iPhone (as in Apple Music); the lyrics keep theirs. */
-private val appUiFontFamily: FontFamily by lazy { platformUiFontFamily() ?: FontFamily.Default }
-
 private fun Modifier.dragHorizontally(state: androidx.compose.foundation.ScrollState): Modifier =
     pointerInput(state) {
         detectHorizontalDragGestures { change, dragAmount ->
@@ -728,6 +726,10 @@ internal fun RecordLabsWindow(
         val connectRemoteOwnerId by WindowsRecordLabsConnect.remoteOwnerId.collectAsState()
         val connectDevices by WindowsRecordLabsConnect.devices.collectAsState()
         val connectDiscovery by WindowsRecordLabsConnect.discoveryStatus.collectAsState()
+        // The device playing instead of this one (Connect), for the player's devices button.
+        androidx.compose.runtime.SideEffect {
+            ConnectOutput.remoteName = connectRemoteOwnerId?.let { id -> connectDevices.firstOrNull { it.id == id }?.name ?: "another device" }
+        }
         var showConnectDevices by remember { mutableStateOf(false) }
         var trackMenuTarget by remember { mutableStateOf<Track?>(null) }
         var trackDetailsTarget by remember { mutableStateOf<Track?>(null) }
@@ -3651,6 +3653,7 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
                     } + " • This device",
                     selected = remoteOwnerId == null,
                     onClick = { onSelect(localDeviceId) },
+                    phone = AppPlatform.isPhone,
                 )
                 devices.forEach { device ->
                     // Keyed by device: a row (and its press state) stays with its device.
@@ -3662,6 +3665,7 @@ private fun androidx.compose.animation.AnimatedVisibilityScope.ConnectDevicesPag
                                 if (device.overInternet) " • Over the internet" else " • Nearby",
                             selected = remoteOwnerId == device.id,
                             onClick = { onSelect(device.id) },
+                            phone = device.platform.equals("ios", ignoreCase = true) || device.platform.equals("android", ignoreCase = true),
                         )
                     }
                 }
@@ -3741,6 +3745,8 @@ private fun ConnectDeviceRow(
     platform: String,
     selected: Boolean,
     onClick: () -> Unit,
+    /** A phone (iPhone, Android): a phone icon instead of the computer one. */
+    phone: Boolean = false,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick),
@@ -3753,7 +3759,12 @@ private fun ConnectDeviceRow(
                 Modifier.size(44.dp).background(Color.Black.copy(alpha = .32f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
+                if (phone) Icon(
+                    Icons.Default.PhoneIphone,
+                    null,
+                    tint = if (selected) MaterialTheme.colors.primary else Color.White,
+                    modifier = Modifier.size(24.dp),
+                ) else Icon(
                     appPainter("record_labs_connect.svg"),
                     null,
                     tint = if (selected) MaterialTheme.colors.primary else Color.White,
@@ -8516,14 +8527,17 @@ private fun MiniPlayer(
                 Icon(Icons.Default.SkipNext, "Next track", tint = Color.White)
             }
         }
-        val progress = if (durationMs > 0L) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
-        Box(
-            Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth(progress)
-                .height(3.dp)
-                .background(MaterialTheme.colors.primary),
-        )
+        // iPhone: no progress line (as Apple Music's mini player).
+        if (!AppPlatform.isIos) {
+            val progress = if (durationMs > 0L) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+            Box(
+                Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth(progress)
+                    .height(3.dp)
+                    .background(MaterialTheme.colors.primary),
+            )
+        }
     }
 }
 
@@ -8796,10 +8810,11 @@ internal fun PlayerPage(
                                 )
                             }
                             lyricsFetchNotice?.let { Text(it, color = SecondaryText, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally)) }
-                            // A little more room under the controls, so the block sits higher.
-                            Spacer(Modifier.height(if (shortPortrait) 12.dp else 30.dp))
+                            // A little more room under the controls, so the block sits higher
+                            // (iPhone: a little lower, closer to the home indicator).
+                            Spacer(Modifier.height(if (shortPortrait) 12.dp else if (AppPlatform.isIos) 14.dp else 30.dp))
                         }
-                    } else Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = 52.dp, bottom = if (shortPortrait) 12.dp else 30.dp)) {
+                    } else Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = 52.dp, bottom = if (shortPortrait) 12.dp else if (AppPlatform.isIos) 14.dp else 30.dp)) {
                         PortraitQueuePanel(
                             track = track,
                             queue = queue,
@@ -9917,6 +9932,8 @@ internal fun LyricsPage(
                     }
                 }
                 val shortPortrait = containerHeight < 640.dp
+                // How tall the controls are, for the empty space they leave when hidden.
+                var controlsHeightPx by remember { mutableStateOf(0) }
                 Box(
                     Modifier.fillMaxSize().pointerInput(Unit) {
                         awaitPointerEventScope {
@@ -9929,7 +9946,7 @@ internal fun LyricsPage(
                 ) {
                     androidx.compose.animation.Crossfade(isQueueVisible, animationSpec = tween(260), label = "lyrics-portrait-queue") { queueOpen ->
                         // iPhone: a little higher (the status bar's room is already kept above).
-                        Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = if (AppPlatform.isIos) 40.dp else 52.dp, bottom = if (shortPortrait) 12.dp else 30.dp)) {
+                        Column(Modifier.fillMaxSize().padding(start = 24.dp, end = 24.dp, top = if (AppPlatform.isIos) 40.dp else 52.dp, bottom = if (shortPortrait) 12.dp else if (AppPlatform.isIos) 14.dp else 30.dp)) {
                             if (queueOpen) {
                                 PortraitQueuePanel(
                                     track = track,
@@ -9971,7 +9988,7 @@ internal fun LyricsPage(
                                 enter = androidx.compose.animation.expandVertically(tween(320)) + androidx.compose.animation.fadeIn(tween(320)),
                                 exit = androidx.compose.animation.shrinkVertically(tween(380)) + androidx.compose.animation.fadeOut(tween(260)),
                             ) {
-                                Column {
+                                Column(Modifier.onSizeChanged { if (it.height > 0) controlsHeightPx = it.height }) {
                                     if (!queueOpen) {
                                         // Translation on/off, over the lyrics just above the seek bar.
                                         PortraitTranslateButton(Modifier.align(Alignment.End).offset(x = 4.dp))
@@ -10000,6 +10017,18 @@ internal fun LyricsPage(
                                 }
                             }
                         }
+                    }
+                    // iPhone: with the controls hidden, a tap where they were brings them back
+                    // (it no longer lands on the lyric line that slid into their place).
+                    if (AppPlatform.isIos && !controlsVisible && !isQueueVisible && controlsHeightPx > 0) {
+                        val bottomRoom = if (shortPortrait) 12.dp else 14.dp
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(with(LocalDensity.current) { controlsHeightPx.toDp() } + bottomRoom)
+                                .pointerInput(Unit) { detectTapGestures { interactionTick++ } },
+                        )
                     }
                 }
             } else {
@@ -11166,7 +11195,29 @@ private fun LyricsLines(
 
     val itemHeights = remember(groups, textSize) { androidx.compose.runtime.mutableStateMapOf<Int, Int>() }
     var userManualOffset by remember(groups) { mutableStateOf(0f) }
-    LaunchedEffect(scrollTargetIndex) {
+    // iPhone: browsing the lyrics by hand, as in Apple Music: the list follows the finger,
+    // glides on after a flick, and goes back to the song a few seconds after the last touch.
+    val iosBrowse = AppPlatform.isIos
+    val lyricsScope = rememberCoroutineScope()
+    var lastManualAt by remember { mutableStateOf(0L) }
+    var flingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    val manualExtent = remember { floatArrayOf(0f) }
+    // While browsing by hand the list holds still: the line in focus moving on does not
+    // shift it (it catches up once the lyrics go back to the song).
+    val latestScrollTarget by androidx.compose.runtime.rememberUpdatedState(scrollTargetIndex)
+    var frozenTarget by remember { mutableStateOf(-1) }
+    val layoutTargetIndex = if (iosBrowse && manualBrowseOverride && frozenTarget >= 0) frozenTarget else scrollTargetIndex
+    if (iosBrowse) LaunchedEffect(manualBrowseOverride, lastManualAt) {
+        if (!manualBrowseOverride) return@LaunchedEffect
+        kotlinx.coroutines.delay(3_200L)
+        flingJob?.cancel()
+        val start = userManualOffset
+        val animation = androidx.compose.animation.core.Animatable(start)
+        animation.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 140f)) { userManualOffset = value }
+        userManualOffset = 0f
+        manualBrowseOverride = false
+    }
+    if (!iosBrowse) LaunchedEffect(scrollTargetIndex) {
         if (manualBrowseOverride) {
             val start = userManualOffset
             val animation = androidx.compose.animation.core.Animatable(start)
@@ -11207,7 +11258,38 @@ private fun LyricsLines(
                 }
             }
             .pointerInput(groups) {
-                detectVerticalDragGestures(
+                if (iosBrowse) {
+                    val tracker = androidx.compose.ui.input.pointer.util.VelocityTracker()
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            flingJob?.cancel()
+                            tracker.resetTracking()
+                            if (!manualBrowseOverride) frozenTarget = latestScrollTarget
+                            manualBrowseOverride = true
+                            lastManualAt = currentTimeMillis()
+                        },
+                        onVerticalDrag = { change, dragAmount ->
+                            change.consume()
+                            tracker.addPosition(change.uptimeMillis, change.position)
+                            val limit = manualExtent[0]
+                            userManualOffset = (userManualOffset + dragAmount).let { if (limit > 0f) it.coerceIn(-limit, limit) else it }
+                            lastManualAt = currentTimeMillis()
+                        },
+                        onDragEnd = {
+                            val velocity = tracker.calculateVelocity().y
+                            flingJob = lyricsScope.launch {
+                                val glide = androidx.compose.animation.core.Animatable(userManualOffset)
+                                glide.animateDecay(velocity, androidx.compose.animation.core.exponentialDecay(frictionMultiplier = 1.1f)) {
+                                    val limit = manualExtent[0]
+                                    val bounded = if (limit > 0f) value.coerceIn(-limit, limit) else value
+                                    userManualOffset = bounded
+                                    lastManualAt = currentTimeMillis()
+                                }
+                            }
+                        },
+                        onDragCancel = { lastManualAt = currentTimeMillis() },
+                    )
+                } else detectVerticalDragGestures(
                     onDragStart = { manualBrowseOverride = true },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
@@ -11240,8 +11322,8 @@ private fun LyricsLines(
             val density = LocalDensity.current
             val anchorY = constraints.maxHeight * anchorFraction
             val fallbackHeight = with(density) { (textSize * 1.85f).dp.toPx() }
-            // Lines sit a little closer together in portrait.
-            val gapPx = with(density) { (if (anchorFraction < 0.3f) 12.dp else 22.dp).toPx() }
+            // Lines sit a little closer together in portrait (iPhone: closer still, as Apple Music).
+            val gapPx = with(density) { (if (anchorFraction < 0.3f) (if (AppPlatform.isIos) 4.dp else 12.dp) else 22.dp).toPx() }
             val indicatorHeightPx = with(density) { 72.dp.toPx() }
             val firstVocalStart = groups.firstOrNull { group -> group.lines.any { !it.isBackground } }?.startMs
             val introGapActive = firstVocalStart != null && firstVocalStart > 4_000L &&
@@ -11272,7 +11354,7 @@ private fun LyricsLines(
                 null -> null
                 else -> groups.getOrNull(activeGapAfter + 1)?.startMs
             }
-            val positions = remember(itemHeights.toMap(), scrollTargetIndex, groups, fallbackHeight, gapPx, indicatorHeightPx, activeGapAfter) {
+            val positions = remember(itemHeights.toMap(), layoutTargetIndex, groups, fallbackHeight, gapPx, indicatorHeightPx, activeGapAfter) {
                 val result = mutableMapOf<Int, Float>()
                 when (activeGapAfter) {
                     -1 -> {
@@ -11284,7 +11366,7 @@ private fun LyricsLines(
                         }
                     }
                     null -> {
-                        val target = scrollTargetIndex.coerceIn(0, groups.lastIndex)
+                        val target = layoutTargetIndex.coerceIn(0, groups.lastIndex)
                         result[target] = 0f
                         var y = 0f
                         for (index in target - 1 downTo 0) {
@@ -11316,6 +11398,7 @@ private fun LyricsLines(
                 result
             }
             val contentExtent = kotlin.math.abs((positions[groups.lastIndex] ?: 0f) - (positions[0] ?: 0f))
+            manualExtent[0] = contentExtent
             val clampedManualOffset = userManualOffset.coerceIn(-contentExtent, contentExtent)
 
             val providerTarget = if (activeGapAfter == -1) {
@@ -11377,15 +11460,33 @@ private fun LyricsLines(
                 androidx.compose.runtime.key(index, group.startMs) {
                     val distance = kotlin.math.abs(index - scrollTargetIndex)
                     val targetOffset = anchorY + (positions[index] ?: ((index - scrollTargetIndex) * fallbackHeight))
-                    val animatedOffset by animateFloatAsState(
-                        targetValue = targetOffset,
-                        animationSpec = tween(
-                            durationMillis = 550,
-                            delayMillis = (distance * 18).coerceAtMost(110),
-                            easing = androidx.compose.animation.core.CubicBezierEasing(0.16f, 1f, 0.3f, 1f),
-                        ),
-                        label = "lyric-position-$index",
-                    )
+                    val animatedOffsetState: androidx.compose.runtime.State<Float> = if (AppPlatform.isIos) {
+                        // As Apple Music: the line coming into focus moves first and each line
+                        // under it follows a moment later, on a soft spring, so the lines
+                        // spread a little while they travel and settle together.
+                        val follow = (index - scrollTargetIndex + 1).coerceAtLeast(0)
+                        val moving = remember { androidx.compose.animation.core.Animatable(targetOffset) }
+                        LaunchedEffect(targetOffset) {
+                            if (kotlin.math.abs(moving.value - targetOffset) < 0.5f) {
+                                moving.snapTo(targetOffset)
+                                return@LaunchedEffect
+                            }
+                            kotlinx.coroutines.delay((follow * 42L).coerceAtMost(320L))
+                            moving.animateTo(targetOffset, spring(dampingRatio = 0.86f, stiffness = 150f))
+                        }
+                        moving.asState()
+                    } else {
+                        animateFloatAsState(
+                            targetValue = targetOffset,
+                            animationSpec = tween(
+                                durationMillis = 550,
+                                delayMillis = (distance * 18).coerceAtMost(110),
+                                easing = androidx.compose.animation.core.CubicBezierEasing(0.16f, 1f, 0.3f, 1f),
+                            ),
+                            label = "lyric-position-$index",
+                        )
+                    }
+                    val animatedOffset by animatedOffsetState
                     val soloAlpha by animateFloatAsState(
                         if (!onlyActiveLine || index == scrollTargetIndex) 1f else 0f,
                         tween(380),
@@ -11714,7 +11815,15 @@ private fun TimedLyricText(
                     pivotFractionY = .5f,
                 )
             }
-            .clickable(enabled = line.startMs > 0L) { onSeek(line.startMs) },
+            .then(
+                // iPhone: no grey box under the finger (a touch also starts a scroll).
+                if (AppPlatform.isIos) Modifier.clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    enabled = line.startMs > 0L,
+                ) { onSeek(line.startMs) }
+                else Modifier.clickable(enabled = line.startMs > 0L) { onSeek(line.startMs) },
+            ),
     ) {
         Box(contentAlignment = when (textAlign) {
             androidx.compose.ui.text.style.TextAlign.Start -> Alignment.TopStart

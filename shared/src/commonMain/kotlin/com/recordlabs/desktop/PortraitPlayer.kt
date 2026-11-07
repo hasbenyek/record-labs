@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -37,7 +38,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.Icon
-import androidx.compose.material.Text
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.FormatListBulleted
@@ -375,13 +375,52 @@ internal fun PortraitBottomBar(
         PortraitTabButton(tab == PortraitTab.Lyrics, onLyrics, Modifier.weight(1f)) {
             Icon(appPainter("lyrics_icon.png"), "Lyrics", tint = tint(tab == PortraitTab.Lyrics), modifier = Modifier.size(24.dp))
         }
+        val remote = ConnectOutput.remoteName.takeIf { AppPlatform.isIos }
         PortraitTabButton(false, onDevices, Modifier.weight(1f)) {
-            Icon(appPainter("record_labs_connect.svg"), "Connected devices", tint = tint(false), modifier = Modifier.size(25.dp))
+            if (remote != null) {
+                // Playing on another device (Connect): the button is lit, as Apple Music
+                // shows AirPlay, and says where the sound is under it.
+                Box(
+                    Modifier
+                        .height(34.dp)
+                        .widthIn(min = 58.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.22f))
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(appPainter("record_labs_connect.svg"), "Connected devices", tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+            } else {
+                Icon(appPainter("record_labs_connect.svg"), "Connected devices", tint = tint(false), modifier = Modifier.size(25.dp))
+            }
         }
         PortraitTabButton(tab == PortraitTab.Queue, onQueue, Modifier.weight(1f)) {
             Icon(Icons.Default.FormatListBulleted, "Queue", tint = tint(tab == PortraitTab.Queue), modifier = Modifier.size(26.dp))
         }
     }
+    val remote = ConnectOutput.remoteName.takeIf { AppPlatform.isIos }
+    androidx.compose.animation.AnimatedVisibility(
+        visible = remote != null,
+        enter = androidx.compose.animation.fadeIn(tween(220)) + androidx.compose.animation.expandVertically(tween(220)),
+        exit = androidx.compose.animation.fadeOut(tween(180)) + androidx.compose.animation.shrinkVertically(tween(180)),
+    ) {
+        Text(
+            "${AppPlatform.deviceName.ifBlank { "iPhone" }} → ${remote.orEmpty()}",
+            color = Color.White.copy(alpha = 0.62f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+        )
+    }
+}
+
+/** The device playing instead of this one (Record Labs Connect), or null; set by the app window. */
+internal object ConnectOutput {
+    var remoteName by androidx.compose.runtime.mutableStateOf<String?>(null)
 }
 
 /** Rounded square above the seek bar on the lyrics page: lyrics translation on / off. */
