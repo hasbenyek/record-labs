@@ -728,7 +728,9 @@ internal fun RecordLabsWindow(
         val connectDiscovery by WindowsRecordLabsConnect.discoveryStatus.collectAsState()
         // The device playing instead of this one (Connect), for the player's devices button.
         androidx.compose.runtime.SideEffect {
-            ConnectOutput.remoteName = connectRemoteOwnerId?.let { id -> connectDevices.firstOrNull { it.id == id }?.name ?: "another device" }
+            val remoteDevice = connectRemoteOwnerId?.let { id -> connectDevices.firstOrNull { it.id == id } }
+            ConnectOutput.remoteName = connectRemoteOwnerId?.let { remoteDevice?.name ?: "another device" }
+            ConnectOutput.remoteIsPhone = remoteDevice?.platform?.let { it.equals("ios", true) || it.equals("android", true) } == true
         }
         var showConnectDevices by remember { mutableStateOf(false) }
         var trackMenuTarget by remember { mutableStateOf<Track?>(null) }

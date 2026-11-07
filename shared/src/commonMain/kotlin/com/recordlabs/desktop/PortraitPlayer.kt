@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -43,6 +44,8 @@ import androidx.compose.material.icons.filled.AllInclusive
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.PhoneIphone
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeUp
@@ -378,18 +381,29 @@ internal fun PortraitBottomBar(
         val remote = ConnectOutput.remoteName.takeIf { AppPlatform.isIos }
         PortraitTabButton(false, onDevices, Modifier.weight(1f)) {
             if (remote != null) {
-                // Playing on another device (Connect): the button is lit, as Apple Music
-                // shows AirPlay, and says where the sound is under it.
-                Box(
+                // Playing on another device (Connect), as Apple Music shows AirPlay: a
+                // capsule with this device on the left and the one playing on the right.
+                Row(
                     Modifier
                         .height(34.dp)
-                        .widthIn(min = 58.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(Color.White.copy(alpha = 0.22f))
-                        .padding(horizontal = 16.dp),
-                    contentAlignment = Alignment.Center,
+                        .background(Color.White.copy(alpha = 0.16f)),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(appPainter("record_labs_connect.svg"), "Connected devices", tint = Color.White, modifier = Modifier.size(22.dp))
+                    Box(
+                        Modifier.width(50.dp).fillMaxHeight().clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Default.PhoneIphone, "This iPhone", tint = Color.White, modifier = Modifier.size(19.dp))
+                    }
+                    Box(Modifier.width(50.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (ConnectOutput.remoteIsPhone) Icons.Default.PhoneIphone else Icons.Default.Computer,
+                            "Playing on $remote",
+                            tint = Color.White,
+                            modifier = Modifier.size(19.dp),
+                        )
+                    }
                 }
             } else {
                 Icon(appPainter("record_labs_connect.svg"), "Connected devices", tint = tint(false), modifier = Modifier.size(25.dp))
@@ -421,6 +435,8 @@ internal fun PortraitBottomBar(
 /** The device playing instead of this one (Record Labs Connect), or null; set by the app window. */
 internal object ConnectOutput {
     var remoteName by androidx.compose.runtime.mutableStateOf<String?>(null)
+    /** The device playing is a phone (iPhone, Android), not a computer. */
+    var remoteIsPhone by androidx.compose.runtime.mutableStateOf(false)
 }
 
 /** Rounded square above the seek bar on the lyrics page: lyrics translation on / off. */
