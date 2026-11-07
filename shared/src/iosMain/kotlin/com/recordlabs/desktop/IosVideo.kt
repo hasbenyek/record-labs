@@ -8,6 +8,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -436,6 +439,8 @@ private object IosMusicVideoSource {
 
 /** Picture height asked for (as on Android: sharp in the artwork's box, light on the phone). */
 private const val MUSIC_VIDEO_HEIGHT = 480
+/** Full screen: a sharper picture. */
+private const val MUSIC_VIDEO_FULLSCREEN_HEIGHT = 720
 /** The picture jumps to the sound only when further apart than this (else it catches up). */
 private const val MUSIC_VIDEO_MAX_DRIFT_MS = 2_500L
 
@@ -451,7 +456,12 @@ internal fun IosMusicVideo(
     shape: RoundedCornerShape,
     scale: ContentScale,
     onAspectRatio: (Float?) -> Unit,
+    /** The round full-screen button at the bottom right (the player page's video). */
+    showFullscreenButton: Boolean = false,
+    /** This is the full-screen view's own video (sharper; see IosMusicVideoFullscreen). */
+    fullscreen: Boolean = false,
 ) {
+    val pictureHeight = if (fullscreen) MUSIC_VIDEO_FULLSCREEN_HEIGHT else MUSIC_VIDEO_HEIGHT
     // Where the picture comes from, tried in turn until one shows: 0 = the picture
     // stream (as on Android), then YouTube's own iPhone streams (HLS, then a plain MP4).
     var stage by remember(track.id) { mutableStateOf(0) }
@@ -468,7 +478,7 @@ internal fun IosMusicVideo(
         if (stage == 0) {
             var waitMs = 1_500L
             while (isActive && waitMs <= 3_000L) {
-                val found = runCatching { IosMusicVideoSource.repository.musicVideoStreamUrl(track.id, MUSIC_VIDEO_HEIGHT) }.getOrNull()
+                val found = runCatching { IosMusicVideoSource.repository.musicVideoStreamUrl(track.id, pictureHeight) }.getOrNull()
                     ?.takeIf { it.isNotBlank() }
                 if (found != null) {
                     AppDiagnostics.log("video", "music video \"${track.title}\": picture stream found")
@@ -513,7 +523,9 @@ internal fun IosMusicVideo(
                     var waited = 0L
                     var started = false
                     while (isActive) {
-                        val playing = engine.isPlaying && engine.currentTrack?.id == track.id && MainWindowActivity.shownNow
+                        // The page's video rests while the same video plays full screen.
+                        val coveredByFullscreen = !fullscreen && MusicVideoFullscreen.trackId == track.id
+                        val playing = engine.isPlaying && engine.currentTrack?.id == track.id && MainWindowActivity.shownNow && !coveredByFullscreen
                         val audioMs = engine.positionMs
                         if (!started) {
                             frames.seekTo(audioMs)
@@ -544,6 +556,17 @@ internal fun IosMusicVideo(
             }
         }
         CoverOverVideo(coverUrl, pictureShown && !gaveUp, shape)
+        if (showFullscreenButton && !fullscreen && pictureShown && !gaveUp) {
+            LiquidGlassCircleButton(
+                icon = androidx.compose.material.icons.Icons.Default.Fullscreen,
+                contentDescription = "Full screen video",
+                onClick = { MusicVideoFullscreen.open(track.id, null, MusicVideoFullscreen.videoBoxBounds) },
+                modifier = Modifier.align(androidx.compose.ui.Alignment.BottomEnd).padding(10.dp),
+                size = 38.dp,
+                iconSize = 24.dp,
+                backdrop = null,
+            )
+        }
     }
 }
 
@@ -556,13 +579,14 @@ internal fun IosTrackArtwork(
     enabled: Boolean,
     musicVideoScale: ContentScale,
     onMusicVideoAspectRatio: (Float?) -> Unit,
+    showFullscreenButton: Boolean = false,
 ) {
     val firstArtist = remember(track.artist) {
         track.artist.split(", ", " & ", " x ", " feat. ", " ft. ").firstOrNull()?.trim().orEmpty()
     }
     val coverUrl = remember(track.artworkUrl) { track.artworkUrl?.highQualityArtworkUrl() ?: track.artworkUrl }
     if (track.hasMusicVideo) {
-        IosMusicVideo(track, coverUrl, modifier, shape, musicVideoScale, onMusicVideoAspectRatio)
+        IosMusicVideo(track, coverUrl, modifier, shape, musicVideoScale, onMusicVideoAspectRatio, showFullscreenButton)
         return
     }
     if (!enabled || track.localPath != null || track.title.isBlank() || firstArtist.isBlank()) {

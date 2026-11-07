@@ -47,5 +47,7 @@ private fun RecordLabsIosApp() {
             isFullscreen = PlatformAppFullscreen.enabled,
             onToggleFullscreen = { PlatformAppFullscreen.enabled = !PlatformAppFullscreen.enabled },
         )
+        // The music video full screen (the video's own button), over everything.
+        com.recordlabs.desktop.IosMusicVideoFullscreen()
     }
 }

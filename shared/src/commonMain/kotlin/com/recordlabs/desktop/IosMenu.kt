@@ -264,7 +264,11 @@ internal fun IosMenuDialog(
                     }
                     .width(style.width.coerceAtMost((windowWidth - MenuMargin * 2).coerceAtLeast(160.dp)))
                     .heightIn(max = (windowHeight - MenuMargin * 2).coerceAtLeast(200.dp))
-                    .shadow(if (dense) 14.dp else 28.dp, style.shape, ambientColor = Color.Black.copy(alpha = 0.4f), spotColor = Color.Black.copy(alpha = 0.5f))
+                    // iPhone glass: a soft shadow even all round (see glassShadow).
+                    .then(
+                        if (glassBackdrop != null) Modifier.glassShadow(style.shape, spread = if (dense) 10.dp else 18.dp, strength = 0.28f, drop = 3.dp)
+                        else Modifier.shadow(if (dense) 14.dp else 28.dp, style.shape, ambientColor = Color.Black.copy(alpha = 0.4f), spotColor = Color.Black.copy(alpha = 0.5f)),
+                    )
                     .clip(style.shape)
                     // iPhone: liquid glass over the app (frosted, so the rows read over
                     // anything); elsewhere the solid card as before.

@@ -97,7 +97,7 @@ internal fun Modifier.liquidGlassPanel(radius: Dp, elevation: Dp = 40.dp): Modif
     val shape = RoundedCornerShape(radius)
     val backdrop = LocalAppBackdrop.current ?: return liquidGlass(shape, elevation)
     return this
-        .shadow(elevation, shape, ambientColor = Color.Black.copy(alpha = .40f), spotColor = Color.Black.copy(alpha = .55f))
+        .glassShadow(shape, spread = elevation * 0.6f, strength = 0.30f, drop = 4.dp)
         .clip(shape)
         .liquidGlassBackground(backdrop, cornerRadius = radius, frosted = true)
         .drawBehind {
@@ -377,11 +377,11 @@ internal fun LiquidGlassCircleButton(
     val circle = androidx.compose.foundation.shape.CircleShape
     val surface = if (backdrop != null) {
         Modifier
-            .shadow(8.dp, circle, ambientColor = Color.Black.copy(alpha = .22f), spotColor = Color.Black.copy(alpha = .30f))
+            .glassShadow(circle, spread = 9.dp, strength = 0.14f)
             .liquidGlassBackground(backdrop, press)
     } else {
         Modifier
-            .shadow(8.dp, circle, ambientColor = Color.Black.copy(alpha = .25f), spotColor = Color.Black.copy(alpha = .35f))
+            .glassShadow(circle, spread = 9.dp, strength = 0.16f)
             .clip(circle)
             .background(Brush.verticalGradient(listOf(Color(0x8C3A3B40), Color(0xA6202125))))
             .drawBehind {

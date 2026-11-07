@@ -29,6 +29,9 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawOutline
+import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
@@ -259,4 +262,44 @@ internal object NoPressIndication : androidx.compose.foundation.IndicationNodeFa
         object : Modifier.Node() {}
     override fun hashCode(): Int = -0x5eed
     override fun equals(other: Any?): Boolean = other === this
+}
+
+/**
+ * A soft shadow all round a glass surface (iPhone), in place of Modifier.shadow.
+ *
+ * Compose's shadow on the iPhone (Skia) is lit from the top left of each element: it
+ * falls to the right and below as a hard dark band, which under the see-through glass
+ * read as black edges. This one is even on every side (a touch more below, as light from
+ * above casts), fades out over [spread], and is never drawn under the glass itself.
+ */
+internal fun Modifier.glassShadow(
+    shape: androidx.compose.ui.graphics.Shape,
+    spread: androidx.compose.ui.unit.Dp = 10.dp,
+    /** How dark it is right by the edge (0..1). */
+    strength: Float = 0.16f,
+    drop: androidx.compose.ui.unit.Dp = 2.dp,
+): Modifier = this.drawBehind {
+    if (size.width <= 0f || size.height <= 0f) return@drawBehind
+    val steps = 8
+    val spreadPx = spread.toPx()
+    val dropPx = drop.toPx()
+    // Each ring adds a little; by the edge all of them overlap ([strength] in all).
+    val ring = 1f - kotlin.math.exp(kotlin.math.ln(1f - strength.coerceIn(0f, 0.95f)) / steps)
+    val colour = androidx.compose.ui.graphics.Color.Black.copy(alpha = ring)
+    val inner = androidx.compose.ui.graphics.Path().apply {
+        addOutline(shape.createOutline(size, layoutDirection, this@drawBehind))
+    }
+    clipPath(inner, androidx.compose.ui.graphics.ClipOp.Difference) {
+        for (i in steps downTo 1) {
+            val grow = spreadPx * i / steps
+            val outline = shape.createOutline(
+                androidx.compose.ui.geometry.Size(size.width + 2 * grow, size.height + 2 * grow),
+                layoutDirection,
+                this@drawBehind,
+            )
+            translate(-grow, -grow + dropPx * i / steps) {
+                drawOutline(outline, colour)
+            }
+        }
+    }
 }

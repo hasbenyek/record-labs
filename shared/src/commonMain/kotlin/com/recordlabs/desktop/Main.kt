@@ -4492,9 +4492,10 @@ private fun DockGlass(shape: androidx.compose.ui.graphics.Shape, modifier: Modif
     Box(
         modifier
             .then(if (press != null) Modifier.glassPress(press) else Modifier)
-            // iPhone: a lighter shadow (the dark one read as black smudges by the glass).
+            // iPhone: a soft shadow even all round (Compose's own falls to the right and
+            // below as a hard dark band: black edges by the glass).
             .then(
-                if (press != null) Modifier.shadow(8.dp, shape, ambientColor = Color.Black.copy(alpha = .22f), spotColor = Color.Black.copy(alpha = .28f))
+                if (press != null) Modifier.glassShadow(shape, spread = 12.dp, strength = 0.14f)
                 else Modifier.shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .6f)),
             )
             .clip(shape)

@@ -95,7 +95,7 @@ actual fun AnimatedTrackArtwork(
         label = "artwork-change",
     ) { shownId ->
         val shown = if (shownId == track.id) track else latestById[shownId] ?: track
-        IosTrackArtwork(shown, Modifier.fillMaxSize(), shape, enabled, musicVideoScale, onMusicVideoAspectRatio)
+        IosTrackArtwork(shown, Modifier.fillMaxSize(), shape, enabled, musicVideoScale, onMusicVideoAspectRatio, showFullscreenButton)
     }
 }
 

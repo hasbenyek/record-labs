@@ -99,6 +99,10 @@ internal fun MusicVideoFullscreenControls(
     selectedCaption: MusicVideoCaptionTrack? = null,
     onSelectCaption: (MusicVideoCaptionTrack?) -> Unit = {},
     modifier: Modifier = Modifier,
+    /** The picture quality menu (the iPhone picks the quality itself: left out there). */
+    showQuality: Boolean = true,
+    /** Extra room at the sides (iPhone turned on its side: the rounded screen corners). */
+    sidePadding: androidx.compose.ui.unit.Dp = 0.dp,
 ) {
     val positionMs = FloatingLyricsState.positionMs
     val durationMs = FloatingLyricsState.durationMs
@@ -121,7 +125,7 @@ internal fun MusicVideoFullscreenControls(
         modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .78f))))
-            .padding(start = 28.dp, end = 28.dp, top = 56.dp, bottom = 18.dp)
+            .padding(start = 28.dp + sidePadding, end = 28.dp + sidePadding, top = 56.dp, bottom = 18.dp)
             // Only the seek bar and buttons count as "on the controls", not the shade above.
             .onPointerEvent(PointerEventType.Enter) { onPointerOnControls(true) }
             .onPointerEvent(PointerEventType.Exit) { onPointerOnControls(false) },
@@ -201,7 +205,7 @@ internal fun MusicVideoFullscreenControls(
                 }
                 Spacer(Modifier.width(4.dp))
             }
-            Box {
+            if (showQuality) Box {
                 TextButton(onClick = { qualityMenuOpen = true }) {
                     Icon(Icons.Default.Settings, null, tint = Color.White, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(6.dp))
