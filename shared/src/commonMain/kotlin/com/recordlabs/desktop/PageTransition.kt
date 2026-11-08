@@ -1,6 +1,5 @@
 package com.recordlabs.desktop
 
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.spring
@@ -88,7 +87,13 @@ internal object PageStack {
         private set
     var kind by mutableStateOf(Kind.None)
         private set
-    val progress = Animatable(1f)
+    /**
+     * How far the move is (0..1, a little past 1 on a spring). Plain state, set at once
+     * when the page changes: an Animatable could only be reset in its coroutine, a frame
+     * later, so that first frame showed the new page already in place, then the move began.
+     */
+    var progressValue by mutableFloatStateOf(1f)
+        private set
     private var job: Job? = null
 
     // The stack's place in the window (covers are in window coordinates).
@@ -182,13 +187,17 @@ internal object PageStack {
         dragging = false
         dragFraction = 0f
         job?.cancel()
-        if (next == Kind.None) return
+        if (next == Kind.None) {
+            progressValue = 1f
+            return
+        }
         val start = if (next == Kind.Pop && committed != null) committed else 0f
+        progressValue = start
         job = scope?.launch {
-            progress.snapTo(start)
-            progress.animateTo(
+            animate(
+                start,
                 1f,
-                when (next) {
+                animationSpec = when (next) {
                     Kind.ZoomOpen -> spring(dampingRatio = 0.82f, stiffness = 260f)
                     Kind.ZoomClose -> spring(dampingRatio = 0.9f, stiffness = 300f)
                     Kind.Fade -> tween(240, easing = androidx.compose.animation.core.LinearEasing)
@@ -196,7 +205,7 @@ internal object PageStack {
                         else tween(420, easing = IosEase)
                     else -> tween(460, easing = IosEase)
                 },
-            )
+            ) { value, _ -> progressValue = value }
             other = null
             kind = Kind.None
         } ?: run {
@@ -322,7 +331,7 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
         val w = size.width
         val stack = PageStack
         val kind = stack.kind
-        val p = stack.progress.value
+        val p = stack.progressValue
         transformOrigin = TransformOrigin(0f, 0f)
         shape = RectangleShape
         clip = false
@@ -408,7 +417,7 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
         // on the page under it.
         val stack = PageStack
         val kind = stack.kind
-        val p = stack.progress.value
+        val p = stack.progressValue
         val slide = !stack.zoomed(stack.top) && !(kind == PageStack.Kind.ZoomOpen || kind == PageStack.Kind.ZoomClose)
         val dim = when {
             kind == PageStack.Kind.None && stack.dragging && role == PageStack.Role.Under && slide -> 1f - stack.dragFraction
