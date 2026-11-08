@@ -69,6 +69,14 @@ internal object PageStack {
     var onBack: (() -> Unit)? = null
     /** The page under the top one is where Back goes (so the edge swipe can show it). */
     var canSwipe = false
+    /**
+     * A tab's own page (Home, Library, Listen Together, Profile: each has its button in the
+     * dock): nothing is under it, so it does not swipe back, and moving between two of them
+     * cross fades.
+     */
+    var isRoot: (Any) -> Boolean = { false }
+    /** The page shown is a tab's own page (no swipe back at all, not even the root's own). */
+    var rootPage = false
 
     // The pages: the one shown, the one moving out (or, while one opens, the one under
     // it), and the one Back goes to.
@@ -118,7 +126,10 @@ internal object PageStack {
     }
 
     /** The root's own edge swipe gives way to the stack's (iPhone). */
-    fun claimsEdgeSwipe(): Boolean = enabled && canSwipe && !playerShown && other == null
+    fun claimsEdgeSwipe(): Boolean = enabled && canSwipe && !rootPage && !playerShown && other == null
+
+    /** A tab's own page: the edge swipe does nothing there (iPhone). */
+    fun blocksEdgeSwipe(): Boolean = enabled && rootPage && !playerShown
 
     /** Whether [key] opened from a cover (it shrinks back into it rather than sliding). */
     fun zoomed(key: Any?): Boolean = key != null && zoomRects.containsKey(key)
@@ -144,6 +155,8 @@ internal object PageStack {
         commitFrom = null
         val next = when {
             playerShown -> Kind.None
+            // From one tab's page to another's (the dock): a cross fade.
+            isRoot(previous) && isRoot(current) -> Kind.Fade
             isBack -> if (zoomRects.containsKey(previous)) Kind.ZoomClose else Kind.Pop
             isTab -> Kind.Fade
             cover != null -> Kind.ZoomOpen
@@ -178,7 +191,7 @@ internal object PageStack {
                 when (next) {
                     Kind.ZoomOpen -> spring(dampingRatio = 0.82f, stiffness = 260f)
                     Kind.ZoomClose -> spring(dampingRatio = 0.9f, stiffness = 300f)
-                    Kind.Fade -> tween(170)
+                    Kind.Fade -> tween(240, easing = androidx.compose.animation.core.LinearEasing)
                     Kind.Pop -> if (committed != null) spring(dampingRatio = 1f, stiffness = 420f)
                         else tween(420, easing = IosEase)
                     else -> tween(460, easing = IosEase)
@@ -355,10 +368,12 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
                 PageStack.Role.Other -> translationX = w * p
                 PageStack.Role.Under -> alpha = 0f
             }
+            // The page left goes first, the new one comes in after it (never both at once
+            // in full: two pages over each other read as a glitch).
             kind == PageStack.Kind.Fade -> when (role) {
-                PageStack.Role.Other -> alpha = (1f - p).coerceIn(0f, 1f)
+                PageStack.Role.Other -> alpha = (1f - p / 0.5f).coerceIn(0f, 1f)
                 PageStack.Role.Under -> alpha = 0f
-                PageStack.Role.Top -> {}
+                PageStack.Role.Top -> alpha = ((p - 0.3f) / 0.7f).coerceIn(0f, 1f)
             }
             kind == PageStack.Kind.ZoomOpen -> when (role) {
                 PageStack.Role.Top -> {

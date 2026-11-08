@@ -2865,8 +2865,22 @@ internal fun RecordLabsWindow(
                     // the page shown and the page Back goes to are both alive, one dock over them.
                     val currentKey = stackKeyOf(section, profilePage, catalogDestination, libraryTarget.value)
                     val backKey = stackBackTarget()?.takeIf { it != currentKey }
+                    PageStack.isRoot = { key ->
+                        (key as? StackPageKey)?.let {
+                            it.catalog == null && when (it.profile) {
+                                null -> it.section != AppSection.Search && it.libraryTarget == null
+                                ProfilePage.Home, ProfilePage.ListenTogether -> true
+                                else -> false
+                            }
+                        } ?: false
+                    }
+                    // A tab's own page (Listen Together's settings are a page inside it).
+                    // (The search box open over Home still closes with the swipe.)
+                    PageStack.rootPage = PageStack.isRoot(currentKey) &&
+                        !(profilePage == ProfilePage.ListenTogether && ListenTogetherUi.settingsOpen) &&
+                        !searchBoxFocused && !landscapeSearchExpanded
                     PageStack.update(currentKey, backKey)
-                    PageStack.canSwipe = backKey != null
+                    PageStack.canSwipe = backKey != null && !PageStack.rootPage
                     val stackHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
                     val stackSavedKeys = remember { mutableSetOf<StackPageKey>() }
                     val stackOther = PageStack.other as? StackPageKey
