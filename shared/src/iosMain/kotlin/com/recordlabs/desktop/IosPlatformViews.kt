@@ -142,6 +142,8 @@ fun Modifier.iosEdgeSwipeBack(): Modifier = pointerInput(Unit) {
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         if (down.position.x > 22.dp.toPx()) return@awaitEachGesture
+        // A page with a page under it: the page stack moves it with the finger itself.
+        if (PageStack.claimsEdgeSwipe()) return@awaitEachGesture
         val trigger = 72.dp.toPx()
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)

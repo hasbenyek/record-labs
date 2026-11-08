@@ -583,6 +583,20 @@ private data class CatalogDestination(
     /** For an album opened from a song title: the song, whose own album link is used. */
     val sourceTrack: Track? = null,
 )
+/** A page of the iPhone's page stack (see PageTransition.kt): what it shows, nothing else. */
+private data class StackPageKey(
+    val section: AppSection? = null,
+    val libraryTarget: String? = null,
+    val profile: ProfilePage? = null,
+    val catalog: CatalogDestination? = null,
+)
+
+private fun stackKeyOf(section: AppSection, profile: ProfilePage?, catalog: CatalogDestination?, libraryTarget: String?): StackPageKey = when {
+    catalog != null -> StackPageKey(catalog = catalog)
+    profile != null -> StackPageKey(profile = profile)
+    else -> StackPageKey(section = section, libraryTarget = libraryTarget.takeIf { section == AppSection.Library })
+}
+
 private data class NavigationSnapshot(
     val section: AppSection,
     val profilePage: ProfilePage?,
@@ -2127,7 +2141,7 @@ internal fun RecordLabsWindow(
             libraryTarget.value = snapshot.libraryTarget
         }
         fun navigateBack(): Boolean {
-            PageTransition.back()
+            PageStack.back()
             if (profilePage == ProfilePage.ListenTogether && ListenTogetherUi.settingsOpen && playerDestination == null) {
                 ListenTogetherUi.settingsOpen = false
                 return true
@@ -2168,6 +2182,27 @@ internal fun RecordLabsWindow(
                 else -> false
             }
         }
+        // The page Back goes to, as navigateBack works it out (iPhone page stack; null when
+        // Back stays on this page: a sub page inside it, the player…).
+        fun stackBackTarget(): StackPageKey? {
+            if (profilePage == ProfilePage.ListenTogether && ListenTogetherUi.settingsOpen) return null
+            val previous = navigationHistory.lastOrNull()
+            if (catalogDestination == null && profilePage == null && section == AppSection.Library && libraryTarget.value != null &&
+                !(previous != null && previous.section == AppSection.Library && previous.profilePage == null &&
+                    previous.catalogDestination == null && previous.playerDestination == null)
+            ) return stackKeyOf(AppSection.Library, null, null, null)
+            if (catalogDestination == null && profilePage == ProfilePage.Settings && settingsSubpage != null &&
+                previous?.profilePage != ProfilePage.Settings
+            ) return null
+            if (previous != null) {
+                return if (previous.playerDestination == null) stackKeyOf(previous.section, previous.profilePage, previous.catalogDestination, previous.libraryTarget) else null
+            }
+            return when {
+                catalogDestination != null -> stackKeyOf(section, profilePage, null, libraryTarget.value)
+                profilePage != null -> stackKeyOf(section, null, null, libraryTarget.value)
+                else -> null
+            }
+        }
         fun runAfterQueueClose(action: () -> Unit): Boolean {
             action()
             return true
@@ -2199,7 +2234,7 @@ internal fun RecordLabsWindow(
         // Back to the page the user was on before entering the Library (Home
         // when there is none).
         fun leaveLibrary() {
-            PageTransition.back()
+            PageStack.back()
             val index = navigationHistory.indexOfLast {
                 it.playerDestination == null && (it.section != AppSection.Library || it.catalogDestination != null || it.profilePage != null)
             }
@@ -2253,7 +2288,7 @@ internal fun RecordLabsWindow(
         }
         val performNavSelect: (AppSection) -> Unit = { it ->
             // The dock's tabs: the pages fade (iPhone).
-            PageTransition.tab()
+            PageStack.tab()
             if (it == AppSection.Home) {
                 performHomeAction()
             } else if (it == AppSection.Library && section == AppSection.Library && catalogDestination == null && profilePage == null) {
@@ -2500,7 +2535,7 @@ internal fun RecordLabsWindow(
         }
         
         fun openListenTogether() {
-            PageTransition.tab()
+            PageStack.tab()
             pushNavigation()
             playerDestination = null
             catalogDestination = null
@@ -2792,14 +2827,14 @@ internal fun RecordLabsWindow(
                 }
             }) {
                 val compact = isCompactLayout(maxWidth, maxHeight)
-                // iPhone portrait: pages slide, fade or grow out of their cover (PageTransition.kt).
-                PageTransition.enabled = compact && AppPlatform.isIos
-                if (PageTransition.enabled) {
-                    PageTransition.layer = androidx.compose.ui.graphics.rememberGraphicsLayer()
-                    PageTransition.scope = rememberCoroutineScope()
+                // iPhone portrait: the pages as a stack (PageTransition.kt).
+                PageStack.enabled = compact && AppPlatform.isIos
+                if (PageStack.enabled) {
+                    PageStack.scope = rememberCoroutineScope()
+                    PageStack.onBack = { navigateBack() }
                 }
                 androidx.compose.runtime.SideEffect {
-                    PageTransition.playerShown = playerDestination != null
+                    PageStack.playerShown = playerDestination != null
                     ArtworkFlight.portrait = compact
                     SheetFlight.enabled = compact
                     TrackLinkLayout.compact = compact
@@ -2825,7 +2860,176 @@ internal fun RecordLabsWindow(
 
                     // BASE LAYER
 
-                    if (catalogDestination != null) {
+                    if (compact && AppPlatform.isIos) {
+                    // iPhone portrait: the pages as a stack, as in Apple Music (PageTransition.kt):
+                    // the page shown and the page Back goes to are both alive, one dock over them.
+                    val currentKey = stackKeyOf(section, profilePage, catalogDestination, libraryTarget.value)
+                    val backKey = stackBackTarget()?.takeIf { it != currentKey }
+                    PageStack.update(currentKey, backKey)
+                    PageStack.canSwipe = backKey != null
+                    val stackHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
+                    val stackSavedKeys = remember { mutableSetOf<StackPageKey>() }
+                    val stackOther = PageStack.other as? StackPageKey
+                    val stackUnder = (PageStack.under as? StackPageKey)?.takeIf { it != currentKey && it != stackOther }
+                    val stackOrder = buildList {
+                        if (stackUnder != null) add(stackUnder to PageStack.Role.Under)
+                        when (PageStack.kind) {
+                            PageStack.Kind.Push, PageStack.Kind.ZoomOpen -> {
+                                if (stackOther != null && stackOther != currentKey) add(stackOther to PageStack.Role.Other)
+                                add(currentKey to PageStack.Role.Top)
+                            }
+                            else -> {
+                                add(currentKey to PageStack.Role.Top)
+                                if (stackOther != null && stackOther != currentKey) add(stackOther to PageStack.Role.Other)
+                            }
+                        }
+                    }
+                    // A page left for good (not in the history any more) does not keep its scroll.
+                    androidx.compose.runtime.SideEffect {
+                        val kept = navigationHistory.map { stackKeyOf(it.section, it.profilePage, it.catalogDestination, it.libraryTarget) }.toSet() +
+                            stackOrder.map { it.first }
+                        stackSavedKeys.filter { it !in kept }.forEach {
+                            stackHolder.removeState(it)
+                            stackSavedKeys.remove(it)
+                        }
+                        stackSavedKeys += stackOrder.map { it.first }
+                    }
+                    val stackPage: @Composable (StackPageKey, Boolean) -> Unit = { key, isTop ->
+                        val catalog = key.catalog
+                        val profile = key.profile
+                        if (catalog != null) {
+                            Box(Modifier.fillMaxSize().background(Background).pageEdgePadding(compact = true, underStatusBar = true)) {
+                                Box(Modifier.fillMaxSize().progressiveHeaderBlur(compact = true)) {
+                                    Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll)) {
+                                        CatalogPage(
+                                            compact = true,
+                                            destination = catalog,
+                                            repository = repository,
+                                            onBack = { navigateBack() },
+                                            onTrack = ::playTrack,
+                                            onTrackMore = { trackMenuTarget = it },
+                                            onPlayNext = ::enqueueTrack,
+                                            onOpenCatalog = { title, kind, browseId, query, params ->
+                                                pushNavigation()
+                                                catalogDestination = CatalogDestination(title, kind, browseId, query, params)
+                                            },
+                                            isSavedToLibrary = { id -> library.savedCollections.any { it.browseId == id } },
+                                            onToggleSaved = { item ->
+                                                val nowSaved = libraryStore.toggleSavedCollection(item)
+                                                library = libraryStore.snapshot()
+                                                playbackNotice = if (nowSaved) "Saved to your library" else "Removed from your library"
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (profile != null) {
+                            Box(Modifier.fillMaxSize().background(Background).pageEdgePadding(compact = true)) {
+                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp)) {
+                                    androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) {
+                                        ProfilePageContent(
+                                            profile,
+                                            true,
+                                            repository,
+                                            onBack = { navigateBack() },
+                                            settingsSubpage = settingsSubpage,
+                                            onSettingsSubpage = {
+                                                // A settings sub page is a step back/forward can return to.
+                                                if (it != null && it != settingsSubpage) pushNavigation()
+                                                settingsSubpage = it
+                                            },
+                                            onGoogleSessionChanged = { accountSyncGeneration++ },
+                                            // Signed in: straight to Home, which loads the account's own feed.
+                                            onSignedIn = {
+                                                accountSyncGeneration++
+                                                navigationHistory.clear()
+                                                forwardNavigationHistory.clear()
+                                                profilePage = null
+                                                settingsSubpage = null
+                                                catalogDestination = null
+                                                playerDestination = null
+                                                section = AppSection.Home
+                                                if (!WindowsPreferences.autoSync()) scope.launch { performHomeLoad(null, false) }
+                                            },
+                                        ) {
+                                            pushNavigation()
+                                            profilePage = it
+                                            // Settings always opens on its main list, not the sub page left last time.
+                                            if (it == ProfilePage.Settings) settingsSubpage = null
+                                            if (it == ProfilePage.ListenTogether) ListenTogetherUi.settingsOpen = false
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            val pageSection = key.section ?: AppSection.Home
+                            // The Library page under another shows the Library page it was.
+                            val ownTarget = remember { mutableStateOf<String?>(null) }
+                            if (!isTop && ownTarget.value != key.libraryTarget) ownTarget.value = key.libraryTarget
+                            val pageTarget = if (isTop) libraryTarget else ownTarget
+                            Box(Modifier.fillMaxSize().background(Background).pageEdgePadding(compact = true, underStatusBar = true)) {
+                                compactScrollDepth[1] = with(LocalDensity.current) { (72.dp + LocalEdgeInsets.current.top).toPx() }
+                                val compactHeaderHide = androidx.compose.animation.core.animateFloatAsState(
+                                    if (compactDockCollapsed && compactPastHeader && !searchBoxFocused && !landscapeSearchExpanded) 1f else 0f,
+                                    androidx.compose.animation.core.tween(320, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+                                    label = "compact-header-hide",
+                                )
+                                val pageBackdrop = rememberGlassBackdrop()
+                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value }).glassBackdropSource(pageBackdrop)) {
+                                    androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) {
+                                        MainContent(pageSection, compact = true, homeListState = homeListState, repository = repository, homeFeed = homeFeed, homeLoading = homeLoading, homeError = homeError, searchHistory = searchHistory, searchQuery = searchQuery, searchFilter = searchFilter, searchResults = searchResults, searchSubmitGeneration = searchSubmitGeneration, libraryTarget = pageTarget, onLibraryNavigate = ::openLibrary, onLibraryBack = ::navigateBack, library = library, onCreatePlaylist = { name -> libraryStore.createPlaylist(name).also { if (it) library = libraryStore.snapshot() } }, onTrack = ::playTrack, onSearchTrack = ::playSearchTrack, onTrackMore = { trackMenuTarget = it }, onPlayNext = ::enqueueTrack, onOpenCatalog = ::openCatalogPage, onHomeItem = ::playHomeItem, onListenTogether = ::openListenTogether, onHomeRefresh = {
+                                            scope.launch { performHomeLoad(null, true) }
+                                        }, onHomeChip = { chip ->
+                                            scope.launch { performHomeLoad(chip?.params, true) }
+                                        })
+                                    }
+                                }
+                                // The page scrolls on under the status bar, shaded there.
+                                StatusBarScrim(Modifier.align(Alignment.TopCenter))
+                                CompactHeader(
+                                    query = searchQuery.value,
+                                    onQueryChange = { value -> searchQuery.value = value; landscapeSearchExpanded = true },
+                                    onFocus = { focused -> searchBoxFocused = focused; if (focused) landscapeSearchExpanded = true },
+                                    onSubmit = { submitSearch(searchQuery.value) },
+                                    onSearchBounds = { left, width -> landscapeSearchLeftPx = left; landscapeSearchWidthPx = width },
+                                    modifier = Modifier.align(Alignment.TopCenter),
+                                    hideFraction = { compactHeaderHide.value },
+                                    glassBackdrop = pageBackdrop,
+                                )
+                            }
+                        }
+                    }
+                    Box(Modifier.fillMaxSize().hiddenUnderOpenSheet()) {
+                        // The dock's glass sees the pages as they move.
+                        val stackBackdrop = rememberGlassBackdrop()
+                        Box(Modifier.fillMaxSize().pageStackContainer().glassBackdropSource(stackBackdrop)) {
+                            for ((key, role) in stackOrder) {
+                                androidx.compose.runtime.key(key) {
+                                    Box(Modifier.fillMaxSize().pageStackPage(key, role)) {
+                                        stackHolder.SaveableStateProvider(key) { stackPage(key, role == PageStack.Role.Top) }
+                                    }
+                                }
+                            }
+                        }
+                        val onProfilePage = profilePage != null && catalogDestination == null
+                        CompactBottomBar(Modifier.align(Alignment.BottomCenter), stackBackdrop) {
+                            sharedDock(DockPlace(
+                                track = currentTrack, isPlaying = isPlaying, isLoading = playbackLoading, notice = playbackNotice,
+                                onPlayPause = ::togglePlayback, onNext = { skipTrack(1) },
+                                onOpenPlayer = { pushNavigation(); originSection = section; playerDestination = lastPlayerDestination },
+                                selected = if (onProfilePage) null else section,
+                                isProfileSelected = onProfilePage && profilePage != ProfilePage.ListenTogether,
+                                homeLoading = homeLoading,
+                                collapsed = compactDockCollapsed, onSelect = performNavSelect,
+                                onProfile = {
+                                    if (!onProfilePage || profilePage == ProfilePage.ListenTogether) { pushNavigation(); profilePage = ProfilePage.Home }
+                                },
+                                onListenTogether = ::openListenTogether, onExpand = { compactDockCollapsed = false },
+                                listenTogetherSelected = onProfilePage && profilePage == ProfilePage.ListenTogether,
+                            ))
+                        }
+                    }
+                    } else if (catalogDestination != null) {
                     Box(Modifier.fillMaxSize().hiddenUnderOpenSheet()) {
                     Row(Modifier.fillMaxSize().pageEdgePadding(compact, underStatusBar = true)) {
                         if (!compact) { Spacer(Modifier.width(76.dp)) }
@@ -2836,7 +3040,6 @@ internal fun RecordLabsWindow(
                                 Modifier.fillMaxSize()
                                     // Portrait: scrolling the page shrinks the dock, as on the other pages.
                                     .then(if (compact) Modifier.nestedScroll(compactDockScroll) else Modifier)
-                                    .pageTransition(listOf("catalog", catalogDestination))
                                     .glassBackdropSource(catalogBackdrop),
                             ) {
                             CatalogPage(
@@ -2955,7 +3158,7 @@ internal fun RecordLabsWindow(
                             Box(Modifier.fillMaxSize().padding(padding).pageEdgePadding(compact = true)) {
                                 // iPhone: the page is recorded for the navigation's liquid glass.
                                 val profileBackdrop = rememberGlassBackdrop()
-                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp).pageTransition(listOf("profile", profilePage, settingsSubpage)).glassBackdropSource(profileBackdrop)) {
+                                Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHeight = 0.dp).glassBackdropSource(profileBackdrop)) {
                                     androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) { profileContent() }
                                 }
                                 CompactBottomBar(Modifier.align(Alignment.BottomCenter), profileBackdrop) {
@@ -3068,7 +3271,7 @@ homeLoading = homeLoading,
                         )
                         // iPhone: the page is recorded for the navigation's liquid glass.
                         val pageBackdrop = rememberGlassBackdrop()
-                        Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value }).pageTransition(listOf("main", section, libraryTarget.value)).glassBackdropSource(pageBackdrop)) {
+                        Box(Modifier.fillMaxSize().nestedScroll(compactDockScroll).progressiveHeaderBlur(compact = false, footerHeight = CompactBottomBarHeight + 92.dp, headerHide = { compactHeaderHide.value }).glassBackdropSource(pageBackdrop)) {
                             androidx.compose.runtime.CompositionLocalProvider(LocalBottomBarInset provides CompactBottomBarHeight + LocalEdgeInsets.current.bottom) {
                             MainContent(section, compact = true, homeListState = homeListState, repository = repository, homeFeed = homeFeed, homeLoading = homeLoading, homeError = homeError, searchHistory = searchHistory, searchQuery = searchQuery, searchFilter = searchFilter, searchResults = searchResults, searchSubmitGeneration = searchSubmitGeneration, libraryTarget = libraryTarget, onLibraryNavigate = ::openLibrary, onLibraryBack = ::navigateBack, library = library, onCreatePlaylist = { name -> libraryStore.createPlaylist(name).also { if (it) library = libraryStore.snapshot() } }, onTrack = ::playTrack, onSearchTrack = ::playSearchTrack, onTrackMore = { trackMenuTarget = it }, onPlayNext = ::enqueueTrack, onOpenCatalog = ::openCatalogPage, onHomeItem = ::playHomeItem, onListenTogether = ::openListenTogether, onHomeRefresh = {
                                 scope.launch {

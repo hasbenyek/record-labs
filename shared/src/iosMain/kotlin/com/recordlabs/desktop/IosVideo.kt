@@ -485,6 +485,18 @@ private object IosMusicVideoSource {
 
 /** Picture height asked for (as on Android: sharp in the artwork's box, light on the phone). */
 private const val MUSIC_VIDEO_HEIGHT = 480
+
+/** The player page's music video, shown at once by the full screen view (while its sharper one loads). */
+internal object IosMusicVideoShare {
+    var frames: Pair<String, IosVideoFrames>? by androidx.compose.runtime.mutableStateOf(null)
+}
+
+/** The player page's video picture for [trackId] (full screen, under its own sharper one). */
+@Composable
+internal fun SharedMusicVideoPicture(trackId: String, modifier: Modifier) {
+    val shared = IosMusicVideoShare.frames?.takeIf { it.first == trackId }?.second ?: return
+    VideoPicture(shared, ContentScale.Fit, modifier)
+}
 /** Full screen: a sharper picture. */
 private const val MUSIC_VIDEO_FULLSCREEN_HEIGHT = 720
 /** The picture jumps to the sound only when further apart than this (else it catches up). */
@@ -560,7 +572,14 @@ internal fun IosMusicVideo(
             key(url) {
                 val frames = remember(url) { IosVideoFrames(url, agent, loop = false, maxSide = 1280.0, label = "music video (${stageName(stage)}) \"${track.title}\"") }
                 DisposableEffect(frames) { onDispose { frames.release() } }
-                LaunchedEffect(frames.pictureShown) { pictureShown = frames.pictureShown }
+                LaunchedEffect(frames.pictureShown) {
+                    pictureShown = frames.pictureShown
+                    // The player page's picture: the full screen view starts with it at once.
+                    if (!fullscreen && frames.pictureShown) IosMusicVideoShare.frames = track.id to frames
+                }
+                DisposableEffect(frames) {
+                    onDispose { if (IosMusicVideoShare.frames?.second === frames) IosMusicVideoShare.frames = null }
+                }
                 LaunchedEffect(frames.aspect) { frames.aspect?.let { latestAspect((it * 100f).toInt() / 100f) } }
                 // Kept in step with the song: play and pause with it, jump to its place when
                 // far apart (start, a seek), otherwise run a little faster or slower.
@@ -570,9 +589,8 @@ internal fun IosMusicVideo(
                     var started = false
                     var lastSeekAt = 0L
                     while (isActive) {
-                        // The page's video rests while the same video plays full screen.
-                        val coveredByFullscreen = !fullscreen && MusicVideoFullscreen.trackId == track.id
-                        val playing = engine.isPlaying && engine.currentTrack?.id == track.id && MainWindowActivity.shownNow && !coveredByFullscreen
+                        // The page's video goes on under the full screen view (which starts with its picture).
+                        val playing = engine.isPlaying && engine.currentTrack?.id == track.id && MainWindowActivity.shownNow
                         val audioMs = engine.positionMs
                         // Seeks only once it is loaded, and not again before the last one has
                         // had time (a seek every moment while it loaded kept it from playing).
@@ -610,7 +628,8 @@ internal fun IosMusicVideo(
                 if (!gaveUp) VideoPicture(frames, scale, Modifier.fillMaxSize())
             }
         }
-        CoverOverVideo(coverUrl, pictureShown && !gaveUp, shape)
+        // Full screen: no cover or loading sign (the player page's picture shows under it).
+        if (!fullscreen) CoverOverVideo(coverUrl, pictureShown && !gaveUp, shape)
         if (showFullscreenButton && !fullscreen && pictureShown && !gaveUp) {
             LiquidGlassCircleButton(
                 icon = androidx.compose.material.icons.Icons.Default.Fullscreen,

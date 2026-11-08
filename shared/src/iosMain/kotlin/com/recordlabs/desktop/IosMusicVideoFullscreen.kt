@@ -98,7 +98,9 @@ internal fun IosMusicVideoFullscreen() {
     }
 
     // A tall (portrait) video stays upright; a wide one is turned on its side.
-    var aspect by remember(trackId) { mutableStateOf<Float?>(null) }
+    var aspect by remember(trackId) {
+        mutableStateOf(IosMusicVideoShare.frames?.takeIf { it.first == trackId }?.second?.aspect)
+    }
     val sideways = (aspect ?: 16f / 9f) > 1.05f
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -130,6 +132,9 @@ internal fun IosMusicVideoFullscreen() {
             Modifier.fillMaxSize().then(if (sideways) Modifier.sideways() else Modifier),
             contentAlignment = Alignment.Center,
         ) {
+            // At once: the picture already playing on the player page; the sharper one
+            // (720p) takes over over it as soon as it shows.
+            SharedMusicVideoPicture(trackId, Modifier.fillMaxSize())
             IosMusicVideo(
                 track = track,
                 coverUrl = null,
