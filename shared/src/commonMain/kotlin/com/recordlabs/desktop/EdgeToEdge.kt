@@ -56,16 +56,15 @@ internal fun rememberEdgeInsets(): EdgeInsets {
 
 /**
  * The app's root: inside the safe area on the desktop and Android (as before). iPhone:
- * only the sides (the notch in landscape) and the keyboard; the status bar and home
- * indicator are left to [LocalEdgeInsets].
+ * only the sides (the notch in landscape); the status bar and home indicator are left to
+ * [LocalEdgeInsets]. The keyboard comes up over the app (over the dock and mini player,
+ * as in Apple Music) rather than pushing it up: iOS itself moves the window when a field
+ * being typed in would be under it.
  */
 @Composable
 internal fun Modifier.appSafeArea(): Modifier =
     if (!AppPlatform.isIos) safeDrawingPadding()
-    else this
-        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
-        // The keyboard, less the home indicator it covers (the pages already leave room for that).
-        .windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars).only(WindowInsetsSides.Bottom))
+    else this.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
 
 /**
  * A page and the status bar. Portrait pages that scroll to the top (home, search,

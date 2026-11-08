@@ -199,7 +199,9 @@ internal object PageStack {
                 1f,
                 animationSpec = when (next) {
                     Kind.ZoomOpen -> spring(dampingRatio = 0.84f, stiffness = 240f)
-                    Kind.ZoomClose -> spring(dampingRatio = 0.86f, stiffness = 260f)
+                    // Into the cover as Apple Music: off at once (no slow spring start, which
+                    // left the card drifting after the finger), easing into the cover.
+                    Kind.ZoomClose -> tween(460, easing = CubicBezierEasing(0.22f, 0.9f, 0.3f, 1f))
                     Kind.Fade -> tween(240, easing = androidx.compose.animation.core.LinearEasing)
                     Kind.Pop -> if (committed != null) spring(dampingRatio = 1f, stiffness = 420f)
                         else tween(420, easing = IosEase)
@@ -259,7 +261,7 @@ internal object PageStack {
         val w = size.width
         val h = size.height
         val scale = 1f - 0.24f * fraction
-        return floatArrayOf(scale, (1f - scale) * w / 2f + fraction * w * 0.32f, (1f - scale) * h / 2f + dy * 0.4f)
+        return floatArrayOf(scale, (1f - scale) * w / 2f + fraction * w * 0.2f, (1f - scale) * h / 2f + dy * 0.35f)
     }
 
     fun zoomStart(): FloatArray = zoomFrom

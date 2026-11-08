@@ -940,8 +940,20 @@ internal fun RecordLabsWindow(
             
             if (currentFeed != null) {
                 if (!isRefresh) homeFeed = currentFeed
-                
+                // Signed in (with "More content" on): Home is the account's own YouTube Music
+                // Home, its shelves in its order (Quick picks, Listen again, Mixed for you…,
+                // made from what the account listens to). The general shelves added for a
+                // signed-out Home (a worldwide hits playlist, Explore's new releases and
+                // moods) were put above them, so the top of Home was the same for everyone.
+                val accountHome = WindowsPreferences.googleSession() != null && WindowsPreferences.moreContent()
+                com.recordlabs.desktop.data.AppDiagnostics.log(
+                    "home",
+                    (if (accountHome) "account Home: " else "Home (not signed in): ") +
+                        currentFeed.shelves.take(8).joinToString(" | ") { it.title },
+                )
+
                 val intlJob = kotlinx.coroutines.coroutineScope { async {
+                    if (accountHome) return@async null
                     runCatching {
                         val searchResult = repository.search("Today's international hits", "Playlists")
                         val playlistId = searchResult.playlists.firstOrNull()?.browseId
@@ -989,20 +1001,32 @@ internal fun RecordLabsWindow(
                     }
                 }
                 
-                val supplemental = runCatching { repository.homeSupplement() }.getOrDefault(emptyList())
+                val supplemental = if (accountHome) emptyList()
+                    else runCatching { repository.homeSupplement() }.getOrDefault(emptyList())
                 val personalized = runCatching { repository.personalizedHome(library.history, library.liked) }.getOrDefault(emptyList())
                 val intlShelf = intlJob.await()
-                
-                val extraShelves = mutableListOf<com.recordlabs.desktop.data.HomeShelf>()
-                if (intlShelf != null) extraShelves.add(intlShelf)
-                extraShelves.addAll(personalized)
-                extraShelves.addAll(supplemental)
-                
-                if (extraShelves.isNotEmpty()) {
-                    currentFeed = currentFeed!!.copy(
-                        shelves = (extraShelves + currentFeed!!.shelves).distinctBy { it.title }
-                    )
-                    if (!isRefresh) homeFeed = currentFeed
+
+                if (accountHome) {
+                    // The account's Home first, as YouTube Music gives it; this app's own picks
+                    // (from what was played here) only after it, and only those it lacks.
+                    val accountTitles = currentFeed!!.shelves.mapTo(HashSet()) { it.title.trim().lowercase() }
+                    val ownPicks = personalized.filter { it.title.trim().lowercase() !in accountTitles }
+                    if (ownPicks.isNotEmpty()) {
+                        currentFeed = currentFeed!!.copy(shelves = (currentFeed!!.shelves + ownPicks).distinctBy { it.title })
+                        if (!isRefresh) homeFeed = currentFeed
+                    }
+                } else {
+                    val extraShelves = mutableListOf<com.recordlabs.desktop.data.HomeShelf>()
+                    if (intlShelf != null) extraShelves.add(intlShelf)
+                    extraShelves.addAll(personalized)
+                    extraShelves.addAll(supplemental)
+
+                    if (extraShelves.isNotEmpty()) {
+                        currentFeed = currentFeed!!.copy(
+                            shelves = (extraShelves + currentFeed!!.shelves).distinctBy { it.title }
+                        )
+                        if (!isRefresh) homeFeed = currentFeed
+                    }
                 }
 
                 if (isRefresh) {
