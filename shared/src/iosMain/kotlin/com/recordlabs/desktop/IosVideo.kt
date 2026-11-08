@@ -433,7 +433,7 @@ internal fun IosAnimatedArtwork(
                 streamUrl = found.streamUrl
                 break
             }
-            if (WindowsAnimatedArtworkRepository.isDefinitiveMiss(track) || waitMs > 12_000L) break
+            if (WindowsAnimatedArtworkRepository.isDefinitiveMiss(track) || waitMs > 30_000L) break
             delay(waitMs)
             waitMs = waitMs * 3 / 2
         }

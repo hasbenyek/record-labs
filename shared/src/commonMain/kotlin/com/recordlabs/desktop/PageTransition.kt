@@ -198,8 +198,8 @@ internal object PageStack {
                 start,
                 1f,
                 animationSpec = when (next) {
-                    Kind.ZoomOpen -> spring(dampingRatio = 0.82f, stiffness = 260f)
-                    Kind.ZoomClose -> spring(dampingRatio = 0.9f, stiffness = 300f)
+                    Kind.ZoomOpen -> spring(dampingRatio = 0.84f, stiffness = 240f)
+                    Kind.ZoomClose -> spring(dampingRatio = 0.86f, stiffness = 260f)
                     Kind.Fade -> tween(240, easing = androidx.compose.animation.core.LinearEasing)
                     Kind.Pop -> if (committed != null) spring(dampingRatio = 1f, stiffness = 420f)
                         else tween(420, easing = IosEase)
@@ -340,19 +340,27 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
         translationY = 0f
         scaleX = 1f
         scaleY = 1f
-        fun zoom(scale: Float, x: Float, y: Float, radius: Float) {
-            scaleX = scale
-            scaleY = scale
+        // The page as a card: [scale] (from the top left, at x, y), cut to [height] (in the
+        // page's own size: the full height, down to the cover's shape) with round corners.
+        fun zoom(scale: Float, x: Float, y: Float, radius: Float, height: Float = size.height) {
+            val s = scale.coerceAtLeast(0.05f)
+            scaleX = s
+            scaleY = s
             translationX = x
             translationY = y
-            shape = RoundedCornerShape(radius / scale.coerceAtLeast(0.05f))
+            shape = CardClip(height, radius / s)
             clip = true
         }
+        // The cover: scale (page width to cover width), x, y, and the cover's height in
+        // the page's own size (a square cover: as tall as the page is wide).
         fun coverTransform(): FloatArray? {
             val rect = stack.zoomRect ?: return null
-            if (w <= 0f) return null
-            return floatArrayOf(rect.width / w, rect.left - stack.origin.x, rect.top - stack.origin.y)
+            if (w <= 0f || rect.width <= 0f) return null
+            return floatArrayOf(rect.width / w, rect.left - stack.origin.x, rect.top - stack.origin.y, w * rect.height / rect.width)
         }
+        val h = size.height
+        val coverRadius = 12.dp.toPx()
+        val cardRadius = 44.dp.toPx()
         when {
             // The edge swipe.
             kind == PageStack.Kind.None && stack.dragging -> {
@@ -360,7 +368,7 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
                 if (role == PageStack.Role.Top) {
                     if (stack.zoomed(key)) {
                         val t = stack.dragTransform(d, stack.dragDy)
-                        zoom(t[0], t[1], t[2], 44.dp.toPx() * (d * 4f).coerceAtMost(1f))
+                        zoom(t[0], t[1], t[2], cardRadius * (d * 4f).coerceAtMost(1f))
                     } else translationX = w * d
                 } else if (role == PageStack.Role.Under && !stack.zoomed(stack.top)) {
                     translationX = -0.3f * w * (1f - d)
@@ -388,9 +396,12 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
                 PageStack.Role.Top -> {
                     val c = coverTransform()
                     if (c != null) {
+                        // Out of the cover: a card of the cover's shape that grows into the page,
+                        // taking the page's height as it goes (as Apple Music).
                         val t = 1f - p
-                        zoom(lerp(1f, c[0], t), c[1] * t, c[2] * t, 16.dp.toPx() * t.coerceAtLeast(0f) + 44.dp.toPx() * (t * (1f - t) * 2f).coerceAtLeast(0f))
-                        alpha = (p / 0.16f).coerceIn(0f, 1f)
+                        val shapeT = 1f - (1f - t.coerceIn(0f, 1f)).let { it * it }
+                        zoom(lerp(1f, c[0], t), c[1] * t, c[2] * t, lerp(cardRadius * 0.6f, coverRadius, t.coerceIn(0f, 1f)), lerp(h, c[3], shapeT))
+                        alpha = (p / 0.12f).coerceIn(0f, 1f)
                     }
                 }
                 PageStack.Role.Under -> alpha = 0f
@@ -400,10 +411,20 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
                 PageStack.Role.Other -> {
                     val c = coverTransform()
                     if (c != null) {
+                        // Into the cover (as Apple Music): the page shrinks to a card that takes
+                        // the cover's shape on the way (its height goes first), lands on the
+                        // cover and melts into it.
                         val from = stack.zoomStart()
                         val t = p
-                        zoom(lerp(from[0], c[0], t), lerp(from[1], c[1], t), lerp(from[2], c[2], t), lerp(44.dp.toPx(), 16.dp.toPx(), t.coerceIn(0f, 1f)))
-                        alpha = (1f - (t - 0.78f) / 0.22f).coerceIn(0f, 1f)
+                        val shapeT = 1f - (1f - t.coerceIn(0f, 1f)).let { it * it }
+                        zoom(
+                            lerp(from[0], c[0], t),
+                            lerp(from[1], c[1], t),
+                            lerp(from[2], c[2], t),
+                            lerp(cardRadius, coverRadius, t.coerceIn(0f, 1f)),
+                            lerp(h, c[3], shapeT),
+                        )
+                        alpha = (1f - (t - 0.82f) / 0.18f).coerceIn(0f, 1f)
                     } else translationX = w * p
                 }
                 PageStack.Role.Under -> alpha = 0f
@@ -447,3 +468,19 @@ internal fun Modifier.pageStackPage(key: Any, role: PageStack.Role): Modifier = 
             awaitPointerEventScope { while (true) awaitPointerEvent(PointerEventPass.Final) }
         } else Modifier,
     )
+
+/** A page cut to a card: [height] px from its top, with round corners. */
+private class CardClip(private val height: Float, private val radius: Float) : androidx.compose.ui.graphics.Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: androidx.compose.ui.unit.LayoutDirection,
+        density: androidx.compose.ui.unit.Density,
+    ): androidx.compose.ui.graphics.Outline = androidx.compose.ui.graphics.Outline.Rounded(
+        androidx.compose.ui.geometry.RoundRect(
+            0f, 0f, size.width, height.coerceIn(1f, size.height.coerceAtLeast(1f)),
+            androidx.compose.ui.geometry.CornerRadius(radius),
+        ),
+    )
+    override fun equals(other: Any?): Boolean = other is CardClip && other.height == height && other.radius == radius
+    override fun hashCode(): Int = height.hashCode() * 31 + radius.hashCode()
+}

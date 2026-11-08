@@ -668,6 +668,16 @@ object WindowsAnimatedArtworkRepository {
                         allCandidates404OrEmpty = false
                         throw e
                     }
+                    // The server busy or failing (503 and the like): no answer about this song,
+                    // so it must not be remembered as having none (it was, and the song never
+                    // got its animated artwork again until the app restarted).
+                    val status = responseHttp.status.value
+                    if (status !in 200..299) {
+                        AppDiagnostics.log("video", "artwork query \"${candidate.title}\" / ${candidate.artist}: HTTP $status, asked again later")
+                        if (status == 404) continue
+                        allCandidates404OrEmpty = false
+                        continue
+                    }
 
                     val response: JsonObject = responseHttp.body()
                     val matchedTitle = response["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
