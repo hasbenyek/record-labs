@@ -2990,12 +2990,16 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         }
     }
 
-    private fun String.looksLikeDurationOrStats(): Boolean =
-        matches(Regex("\\d{1,2}:\\d{2}(:\\d{2})?")) ||
-            contains("play", ignoreCase = true) ||
-            contains("view", ignoreCase = true) ||
-            contains("subscriber", ignoreCase = true) ||
-            matches(Regex("(?i)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec).*"))
+    /**
+     * A length ("3:42"), a count ("14M plays", "1.2K views") or a date ("Nov 3, 2025")
+     * in a listing's details, not a name. Only whole values: names that merely start
+     * with a month or contain "play"/"view" (Novo Amor, Maroon 5, Julia Michaels,
+     * Coldplay, Playboi Carti) were taken for one, so the artist became "YouTube Music".
+     */
+    private fun String.looksLikeDurationOrStats(): Boolean {
+        val text = trim()
+        return DURATION_TEXT.matches(text) || STATS_TEXT.matches(text) || DATE_TEXT.matches(text)
+    }
 
     /** "A & B", "A, B", "A feat. B", "A x B" -> normalized names of A and B. */
     private fun String.artistNames(): List<String> =
@@ -3209,6 +3213,9 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
     }
 
     companion object {
+        private val DURATION_TEXT = Regex("\\d{1,2}:\\d{2}(:\\d{2})?")
+        private val STATS_TEXT = Regex("(?i)(no|[\\d.,]+\\s*[KMB]?)\\s*(plays?|views?|subscribers?|listeners?|monthly audience|watching)( .*)?")
+        private val DATE_TEXT = Regex("(?i)(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\\.?\\s+\\d{1,4}(,?\\s*\\d{4})?|\\d{1,2}\\s+(jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december)\\.?(\\s+\\d{4})?|\\d+\\s+(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\\s+ago")
         private const val API_KEY = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX3"
         private const val CLIENT_VERSION = "1.20260806.01.00"
         /** Continuation pages followed for an artist's "Show All" page. */
