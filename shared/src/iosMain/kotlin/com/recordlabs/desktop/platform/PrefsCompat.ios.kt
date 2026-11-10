@@ -9,7 +9,9 @@ actual class PrefsNode(private val path: String) {
     private fun has(key: String) = defaults.objectForKey(k(key)) != null
 
     @Suppress("UNCHECKED_CAST")
-    actual fun <T : String?> get(key: String, default: T): T = (defaults.stringForKey(k(key)) ?: default) as T
+    actual fun get(key: String, default: String): String = defaults.stringForKey(k(key)) ?: default
+
+    actual fun get(key: String, default: String?): String? = defaults.stringForKey(k(key)) ?: default
     actual fun put(key: String, value: String) = defaults.setObject(value, k(key))
     actual fun getBoolean(key: String, default: Boolean): Boolean = if (has(key)) defaults.boolForKey(k(key)) else default
     actual fun putBoolean(key: String, value: Boolean) = defaults.setBool(value, k(key))

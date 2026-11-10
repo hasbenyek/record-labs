@@ -1087,6 +1087,7 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 .build()
             val response = httpClient.newCall(request).execute().use { it.body?.string() }
                 ?.let { Json.parseToJsonElement(it).jsonObject } ?: return@runCatching null
+            if (!response.isPlayerFor(videoId)) return@runCatching null
             val format = response.findArrays("adaptiveFormats").asSequence()
                 .flatMap { it.asSequence() }
                 .filterIsInstance<JsonObject>()
@@ -1596,6 +1597,43 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         return resolveOfficialTrack(Track(videoId, title, artist))
     }
 
+    private val completedMetadata = concurrentMapOf<String, Track>()
+
+    /**
+     * [track] with its real artist (and album when missing), for a track whose
+     * artist is unknown ("YouTube Music"): read from YouTube Music's own queue
+     * entry of this video, else the video's channel. Null when nothing better is found.
+     */
+    suspend fun completeTrackMetadata(track: Track): Track? = withContext(IoDispatcher) {
+        if (!track.hasUnknownArtist || track.id.startsWith("pending:")) return@withContext null
+        completedMetadata[track.id]?.let { found ->
+            return@withContext track.copy(artist = found.artist, album = track.album.ifBlank { found.album })
+        }
+        val fromQueue = runCatching {
+            val response = client.postJson(
+                "https://music.youtube.com/youtubei/v1/next?key=$API_KEY",
+                """{"context":{"client":{"clientName":"WEB_REMIX","clientVersion":"$CLIENT_VERSION","hl":"en","gl":"US"}},"videoId":"${track.id}","enablePersistentPlaylistPanel":true}""",
+                timeoutMs = 10_000L,
+                withAccount = false,
+            )
+            response.findObjects("playlistPanelVideoRenderer")
+                .firstOrNull { it.findString("videoId") == track.id }
+                ?.let(::trackFromPlaylistPanelItem)
+        }.getOrNull()?.takeUnless { it.hasUnknownArtist }
+        val found = fromQueue ?: runCatching {
+            // The video's channel ("Artist - Topic" for songs).
+            val metadata = client.get("https://www.youtube.com/oembed") {
+                parameter("url", "https://www.youtube.com/watch?v=${track.id}")
+                parameter("format", "json")
+            }.body<JsonObject>()
+            val author = metadata["author_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                .removeSuffix(" - Topic").trim()
+            Track(track.id, track.title, author).takeUnless { it.hasUnknownArtist }
+        }.getOrNull() ?: return@withContext null
+        completedMetadata[track.id] = found
+        track.copy(artist = found.artist, album = track.album.ifBlank { found.album })
+    }
+
     suspend fun resolveOfficialTrack(track: Track): Track? =
         withContext(IoDispatcher) { resolveOfficialTrackOnCaller(track) }
 
@@ -1605,16 +1643,24 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
             filteredSearchTracks("${track.title} ${track.artist}", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
         }.getOrDefault(emptyList()).filter(Track::isOfficial)
         val normalizedTitle = track.title.normalizedTitle()
-        val normalizedArtist = track.artist.normalizedTitle()
-        return candidates.maxByOrNull { candidate ->
-            var score = 0
-            if (candidate.title.normalizedTitle() == normalizedTitle) score += 100
-            else if (candidate.title.normalizedTitle().contains(normalizedTitle)) score += 35
-            if (candidate.artist.normalizedTitle().contains(normalizedArtist) ||
-                normalizedArtist.contains(candidate.artist.normalizedTitle())) score += 70
-            if (track.durationMs > 0 && kotlin.math.abs(track.durationMs - candidate.durationMs) <= 5_000L) score += 35
-            score
-        }
+        val normalizedArtist = track.artist.takeUnless { track.hasUnknownArtist }?.normalizedTitle().orEmpty()
+        // Only a confident match: the same title, and the same artist or length. The
+        // best of unrelated results used to be taken, so another song played.
+        return candidates.mapNotNull { candidate ->
+            val candidateTitle = candidate.title.normalizedTitle()
+            val titleScore = when {
+                candidateTitle == normalizedTitle -> 100
+                normalizedTitle.isNotBlank() && candidateTitle.contains(normalizedTitle) -> 35
+                else -> return@mapNotNull null
+            }
+            val candidateArtist = candidate.artist.normalizedTitle()
+            val artistMatches = normalizedArtist.isNotBlank() && candidateArtist.isNotBlank() &&
+                (candidateArtist.contains(normalizedArtist) || normalizedArtist.contains(candidateArtist))
+            val lengthMatches = track.durationMs > 0 && candidate.durationMs > 0 &&
+                kotlin.math.abs(track.durationMs - candidate.durationMs) <= 5_000L
+            if (!artistMatches && !lengthMatches) return@mapNotNull null
+            candidate to titleScore + (if (artistMatches) 70 else 0) + (if (lengthMatches) 35 else 0)
+        }.maxByOrNull { it.second }?.first
     }
 
     // Album rows that YouTube Music serves as music videos (OMV/UGC), mapped to
@@ -2106,6 +2152,7 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 .build()
             val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching null
             val response = Json.parseToJsonElement(responseStr).jsonObject
+            if (!response.isPlayerFor(videoId)) return@runCatching null
             val formats = response
                 .findArrays("adaptiveFormats").asSequence()
                 .flatMap { it.asSequence() }
@@ -2312,7 +2359,9 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
                 .post(bodyStr.toOkBody("application/json"))
                 .build()
             val responseStr = httpClient.newCall(request).execute().use { it.body?.string() } ?: return@runCatching null
-            val streaming = Json.parseToJsonElement(responseStr).jsonObject["streamingData"] as? JsonObject
+            val root = Json.parseToJsonElement(responseStr).jsonObject
+            if (!root.isPlayerFor(videoId)) return@runCatching null
+            val streaming = root["streamingData"] as? JsonObject
                 ?: return@runCatching null
             streaming to client.userAgent
         }.getOrNull()
@@ -2565,6 +2614,10 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         } ?: return@runCatching null
         
         val response = Json.parseToJsonElement(responseStr).jsonObject
+        if (!response.isPlayerFor(videoId)) {
+            println("[stream] $videoId: ${playbackClient.name} answered for another video; skipped")
+            return@runCatching null
+        }
         if (anonymousVisitorData == null) {
             // Every player response carries a fresh anonymous visitor id; keep one
             // so VISIONOS still works if the YouTube Music page could not be read.
@@ -2891,7 +2944,11 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
         val musicVideoType = (watch ?: item).findString("musicVideoType")
         val title = item["title"]?.findString("text") ?: item.flexText(0) ?: return null
         val subtitle = item["subtitle"]?.allRunText().orEmpty().ifBlank { item.flexText(1).orEmpty() }
-        val artist = subtitle.substringBefore("•").trim().ifBlank { "YouTube Music" }
+        // "Song • Artist • …" (a media type first) or "Artist • 1.2M views".
+        val parts = subtitle.split("•").map(String::trim).filter(String::isNotBlank)
+        val mediaTypes = setOf("song", "video", "single", "ep", "episode", "music video")
+        val artist = parts.firstOrNull { it.lowercase() !in mediaTypes && !it.looksLikeDurationOrStats() }
+            .orEmpty().ifBlank { "YouTube Music" }
         val artworkUrl = item.bestArtworkUrl() ?: "https://music.youtube.com/img/avatar_single_500.png"
         val explicit = item.toString().contains("MUSIC_EXPLICIT_BADGE")
         return Track(
@@ -2960,6 +3017,16 @@ class WindowsMusicRepository : CatalogRepository, LyricsRepository, AutoCloseabl
     private fun List<CatalogItem>.sortedByExactTitle(query: String): List<CatalogItem> =
         sortedWith(compareBy<CatalogItem> { it.title.normalizedTitle() != query.normalizedTitle() }
             .thenBy { !it.title.contains(query, ignoreCase = true) })
+
+    /**
+     * YouTube sometimes answers a player request with another video's player
+     * (its stream then plays a different song than the one picked). Like yt-dlp,
+     * an answer is only used when it is for the requested video.
+     */
+    private fun JsonObject.isPlayerFor(videoId: String): Boolean {
+        val answered = (this["videoDetails"] as? JsonObject)?.get("videoId")?.jsonPrimitive?.contentOrNull
+        return answered == null || answered == videoId
+    }
 
     private fun List<Track>.preferOfficial(): List<Track> {
         val official = filter(Track::isOfficial)

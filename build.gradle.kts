@@ -25,7 +25,7 @@ val nativeResourceDir = if (isWindowsHost) "windows-x64" else "linux-x64"
 group = "com.recordlabs.desktop"
 // The one place for the app version (installers, update checks). Change it with
 // "gradlew setVersion -PnewVersion=1.2.3", which also updates AppInfo.BUILD_VERSION.
-val appVersion = "0.1.8"
+val appVersion = "0.1.9"
 version = appVersion
 
 kotlin {

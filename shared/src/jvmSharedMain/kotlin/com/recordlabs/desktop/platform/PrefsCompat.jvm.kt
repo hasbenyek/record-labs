@@ -5,7 +5,11 @@ import java.util.prefs.Preferences
 /** java.util.prefs underneath: the same saved settings as before. */
 actual class PrefsNode(val preferences: Preferences) {
     @Suppress("UNCHECKED_CAST")
-    actual fun <T : String?> get(key: String, default: T): T = preferences.get(key, default) as T
+    actual fun get(key: String, default: String): String = preferences.get(key, default) ?: default
+
+    // Another JVM name: both get(String, String) overloads have the same JVM signature.
+    @kotlin.jvm.JvmName("getNullable")
+    actual fun get(key: String, default: String?): String? = preferences.get(key, default)
     actual fun put(key: String, value: String) = preferences.put(key, value)
     actual fun getBoolean(key: String, default: Boolean): Boolean = preferences.getBoolean(key, default)
     actual fun putBoolean(key: String, value: Boolean) = preferences.putBoolean(key, value)

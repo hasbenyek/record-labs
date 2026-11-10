@@ -213,7 +213,16 @@ object WindowsLyricsProviderRegistry {
         return result
     }
 
+    /**
+     * Finds the real artist of a track whose artist is unknown ("YouTube Music"),
+     * set by the app (the repository). Without an artist no provider finds the lyrics.
+     */
+    @kotlin.concurrent.Volatile var metadataCompleter: (suspend (Track) -> Track?)? = null
+
     suspend fun getLyricsResult(track: Track, forceRefresh: Boolean = false): LyricsResult = withContext(IoDispatcher) {
+        val track = if (track.hasUnknownArtist) {
+            metadataCompleter?.let { complete -> runCatching { withTimeoutOrNull(10_000L) { complete(track) } }.getOrNull() } ?: track
+        } else track
         val cacheKey = cacheKey(track)
         val diskCache = cacheFile(track)
         if (forceRefresh) {

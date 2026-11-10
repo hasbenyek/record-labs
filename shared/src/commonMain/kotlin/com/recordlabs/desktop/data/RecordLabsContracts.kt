@@ -28,6 +28,16 @@ val Track.playsAsIs: Boolean
     get() = isOfficial || !musicVideoType.isNullOrBlank()
 
 /**
+ * The artist is not known: YouTube's answer had no artist (shown as "YouTube
+ * Music"), or a media-type word was read as the artist. Lyrics need the real one.
+ */
+val Track.hasUnknownArtist: Boolean
+    get() = localPath == null && artist.trim().let { name ->
+        name.isBlank() || name.equals("YouTube Music", true) ||
+            name.lowercase() in setOf("song", "video", "lagu", "single", "episode", "unknown artist")
+    }
+
+/**
  * The other version of a song on YouTube Music: the official music video of
  * a song, or the song (audio) of a music video, as its player offers with the
  * Song / Video switch. [segments] line up the two timelines (a video often has

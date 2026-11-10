@@ -21,6 +21,8 @@ import platform.Foundation.dataTaskWithRequest
 import platform.Foundation.dataWithBytes
 import platform.Foundation.setHTTPBody
 import platform.Foundation.setHTTPMethod
+import platform.Foundation.setHTTPShouldHandleCookies
+import platform.Foundation.NSHTTPCookieAcceptPolicyNever
 import platform.Foundation.setValue
 import platform.darwin.DISPATCH_TIME_FOREVER
 import platform.darwin.NSObject
@@ -50,16 +52,29 @@ private class NoRedirects : NSObject(), NSURLSessionTaskDelegateProtocol {
     ) = completionHandler(null)
 }
 
+/**
+ * No cookie handling by iOS: the app sends the account's cookies itself. With
+ * iOS's own cookie store on, the cookies YouTube sets in its answers (YSC,
+ * VISITOR_INFO1_LIVE) were sent instead of the app's Cookie header, so every
+ * request after the first one went out signed out (Home without the account's picks).
+ */
+internal fun NSURLSessionConfiguration.withoutCookies(): NSURLSessionConfiguration = apply {
+    HTTPCookieStorage = null
+    HTTPShouldSetCookies = false
+    HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever
+}
+
 actual object PlatformHttp {
-    private val session by lazy { NSURLSession.sessionWithConfiguration(NSURLSessionConfiguration.defaultSessionConfiguration) }
+    private val session by lazy { NSURLSession.sessionWithConfiguration(NSURLSessionConfiguration.defaultSessionConfiguration.withoutCookies()) }
     private val noRedirectSession by lazy {
-        NSURLSession.sessionWithConfiguration(NSURLSessionConfiguration.defaultSessionConfiguration, NoRedirects(), null)
+        NSURLSession.sessionWithConfiguration(NSURLSessionConfiguration.defaultSessionConfiguration.withoutCookies(), NoRedirects(), null)
     }
 
     actual fun execute(request: HttpRequest): HttpResponse {
         val url = NSURL.URLWithString(request.url) ?: throw HttpException("Bad address: ${request.url}")
         val native = NSMutableURLRequest.requestWithURL(url, NSURLRequestUseProtocolCachePolicy, request.timeoutMs / 1000.0)
         native.setHTTPMethod(request.method)
+        native.setHTTPShouldHandleCookies(false)
         request.headers.forEach { (name, value) -> native.setValue(value, forHTTPHeaderField = name) }
         request.contentType?.let { native.setValue(it, forHTTPHeaderField = "Content-Type") }
         request.body?.let { native.setHTTPBody(it.toNSData()) }
@@ -93,4 +108,14 @@ actual object PlatformHttp {
     }
 }
 
-actual fun ktorEngine(): io.ktor.client.engine.HttpClientEngineFactory<*> = io.ktor.client.engine.darwin.Darwin
+/** Darwin without iOS's cookie handling (see [withoutCookies]). */
+private object CookielessDarwin : io.ktor.client.engine.HttpClientEngineFactory<io.ktor.client.engine.darwin.DarwinClientEngineConfig> {
+    override fun create(block: io.ktor.client.engine.darwin.DarwinClientEngineConfig.() -> Unit): io.ktor.client.engine.HttpClientEngine =
+        io.ktor.client.engine.darwin.Darwin.create {
+            block()
+            configureSession { withoutCookies() }
+            configureRequest { setHTTPShouldHandleCookies(false) }
+        }
+}
+
+actual fun ktorEngine(): io.ktor.client.engine.HttpClientEngineFactory<*> = CookielessDarwin

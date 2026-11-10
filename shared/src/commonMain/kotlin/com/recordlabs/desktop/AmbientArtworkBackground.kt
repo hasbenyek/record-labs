@@ -112,7 +112,9 @@ internal fun AmbientArtworkBackground(artworkModel: Any?, baseColor: Color, modi
 /** Phones draw the background at a third of the size (see above); `debug.recordlabs.ambientscale` overrides it. */
 private val AMBIENT_DOWNSCALE: Float =
     AppPlatform.debugProp("ambientscale").toFloatOrNull()?.coerceIn(1f, 16f)
-        ?: if (AppPlatform.isPhone) 3f else 1f
+        // The desktop: half size (a quarter of the work); the gradients are soft, so it
+        // looks the same and the graphics card has much less to do on large windows.
+        ?: if (AppPlatform.isPhone) 3f else 2f
 
 /** Measuring only: `adb shell setprop debug.recordlabs.ambient 0` keeps the background still (read at launch). */
 private object AmbientSwitch {
@@ -121,7 +123,8 @@ private object AmbientSwitch {
 
 // Android: fewer redraws (the full-screen colour shader competes with video and
 // animated artwork for the GPU; the colours drift slowly either way).
-private val AMBIENT_FRAME_MS = if (AppPlatform.isPhone) 100L else 33L
+// The desktop: 20 redraws a second (was 30), the colours drift slowly either way.
+private val AMBIENT_FRAME_MS = if (AppPlatform.isPhone) 100L else 50L
 private const val AMBIENT_COLOR_CHANGE_MS = 1_000
 private const val AMBIENT_SPREAD = 0.06f
 private const val AMBIENT_DIM = 0.18f

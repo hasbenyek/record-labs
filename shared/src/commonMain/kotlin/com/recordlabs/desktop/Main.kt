@@ -240,6 +240,7 @@ import com.recordlabs.desktop.data.WindowsMusicRepository
 import com.recordlabs.desktop.data.Track
 import com.recordlabs.desktop.data.catalogKindFor
 import com.recordlabs.desktop.data.playsAsIs
+import com.recordlabs.desktop.data.hasUnknownArtist
 import com.recordlabs.desktop.data.HomeFeed
 import com.recordlabs.desktop.data.HomeChip
 import com.recordlabs.desktop.data.HomeItem
@@ -618,7 +619,7 @@ internal fun RecordLabsWindow(
     isFullscreen: Boolean = false,
     onToggleFullscreen: () -> Unit = {},
 ) {
-
+    remember { AppImageLoader.install(); 0 }
     var section by remember { mutableStateOf(AppSection.Home) }
     var originSection by remember { mutableStateOf(AppSection.Home) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -667,6 +668,8 @@ internal fun RecordLabsWindow(
         ),
     ) {
         val repository = remember { WindowsMusicRepository() }
+        // Lyrics of a song whose artist is unknown ("YouTube Music") look the artist up first.
+        LaunchedEffect(repository) { WindowsLyricsProviderRegistry.metadataCompleter = repository::completeTrackMetadata }
         val mediaPlayer = remember { createPlaybackEngine() }
         // iPhone: what the first song needs is fetched at launch, and the last song's
         // stream is loaded, so pressing play starts at once.
@@ -769,9 +772,9 @@ internal fun RecordLabsWindow(
         val libraryTarget = remember { mutableStateOf<String?>(null) }
         var landscapeSearchExpanded by remember { mutableStateOf(false) }
         var searchBoxFocused by remember { mutableStateOf(false) }
-        // Android (landscape): the header stays hidden when a player page opens (\ on a
-        // keyboard brings it); the desktop shows it for 3 s first.
-        val playerHeaderVisible = remember { mutableStateOf(!AppPlatform.isPhone) }
+        // Landscape, every platform: the header stays hidden when a player page opens
+        // (the search button in the top-right corner, or \ on a keyboard, brings it).
+        val playerHeaderVisible = remember { mutableStateOf(false) }
         val searchFocusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
         val searchSelectAllTrigger = remember { mutableStateOf(0) }
         var headerHovered by remember { mutableStateOf(false) }
@@ -779,13 +782,13 @@ internal fun RecordLabsWindow(
         val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
 
         LaunchedEffect(playerDestination) {
-            if (playerDestination != null) playerHeaderVisible.value = !AppPlatform.isPhone
+            if (playerDestination != null) playerHeaderVisible.value = false
             // The hover tracker only exists on the player pages; leaving them
             // gives no Exit event, so start fresh next time.
             else {
                 headerHovered = false
                 // Hidden already when the next player page opens (no flash of it).
-                if (AppPlatform.isPhone) playerHeaderVisible.value = false
+                playerHeaderVisible.value = false
             }
         }
         LaunchedEffect(playerDestination, playerHeaderVisible.value, landscapeSearchExpanded, headerHovered) {
@@ -1304,13 +1307,13 @@ internal fun RecordLabsWindow(
             if (!track.playsAsIs && !AppPlatform.isPhone) {
                 playbackNotice = "Mencari audio resmi YouTube Music…"
                 scope.launch {
-                    val official = repository.resolveOfficialTrack(track)
-                    if (official == null) {
-                        playbackNotice = "Audio resmi YouTube Music tidak ditemukan."
-                    } else {
-                        val officialQueue = queue.map { if (it.id == track.id) official else it }
-                        playTrack(official, officialQueue)
-                    }
+                    val official = runCatching { repository.resolveOfficialTrack(track) }.getOrNull()
+                    // No confident official audio: the picked item itself plays (never a
+                    // different song).
+                    val chosen = official ?: track.copy(isOfficial = true)
+                    if (playbackNotice == "Mencari audio resmi YouTube Music…") playbackNotice = null
+                    val officialQueue = queue.map { if (it.id == track.id) chosen else it }
+                    playTrack(chosen, officialQueue)
                 }
                 return
             }
@@ -1409,8 +1412,8 @@ internal fun RecordLabsWindow(
         fun enqueueTrack(track: Track) {
             if (!track.playsAsIs) {
                 scope.launch {
-                    repository.resolveOfficialTrack(track)?.let(::enqueueTrack)
-                        ?: run { playbackNotice = "Audio resmi YouTube Music tidak ditemukan." }
+                    val official = runCatching { repository.resolveOfficialTrack(track) }.getOrNull()
+                    enqueueTrack(official ?: track.copy(isOfficial = true))
                 }
                 return
             }
@@ -1579,14 +1582,32 @@ internal fun RecordLabsWindow(
                 )
                 isPlaying = false
                 playbackNotice = "Mencari lagu dari ${item.title}…"
-                val track = runCatching { repository.search(item.title).tracks.firstOrNull() }.getOrNull()
-                if (track != null) playTrack(track) else playbackNotice = "Tidak ada lagu yang bisa diputar dari item ini."
+                // Only a result with this very title (the first result of a search could be
+                // another song).
+                fun String.key() = lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+                val track = runCatching {
+                    repository.search(listOf(item.title, item.subtitle.substringBefore("•")).joinToString(" ").trim()).tracks
+                        .firstOrNull { it.title.key() == item.title.key() }
+                }.getOrNull()
+                if (track != null) playTrack(track) else {
+                    if (currentTrack?.id == "pending:${item.title}") currentTrack = null
+                    playbackNotice = "Tidak ada lagu yang bisa diputar dari item ini."
+                }
             }
         }
 
         // Match Android's paged YouTubeQueue behavior: fill the radio queue as
         // soon as a track becomes visible in the full player/lyrics surface,
         // and refill well before the last item is reached.
+        // A song shown as by "YouTube Music" (YouTube left its artist out): the real
+        // artist is looked up and shown, in the queue too.
+        LaunchedEffect(currentTrack?.id) {
+            val playing = currentTrack?.takeIf { it.hasUnknownArtist } ?: return@LaunchedEffect
+            val completed = runCatching { repository.completeTrackMetadata(playing) }.getOrNull() ?: return@LaunchedEffect
+            if (currentTrack?.id != playing.id) return@LaunchedEffect
+            currentTrack = currentTrack?.copy(artist = completed.artist, album = currentTrack?.album?.ifBlank { completed.album }.orEmpty())
+            playbackQueue = playbackQueue.map { if (it.id == playing.id) it.copy(artist = completed.artist, album = it.album.ifBlank { completed.album }) else it }
+        }
         LaunchedEffect(currentTrack?.id, playbackQueueIndex, playbackQueue.size) {
             val seed = currentTrack ?: return@LaunchedEffect
             // Settings > Player > Load more automatically.
@@ -2823,7 +2844,7 @@ internal fun RecordLabsWindow(
             val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
             // iPhone: the app fills the screen under the status bar and home indicator (EdgeToEdge.kt).
             // iPhone: the app under its menus, dialogs and sheets, for their liquid glass.
-            val appBackdrop = rememberGlassBackdrop(onDemand = true)
+            val appBackdrop = if (AppPlatform.isIos) rememberGlassBackdrop(onDemand = true) else null
             androidx.compose.runtime.CompositionLocalProvider(LocalOpenCatalog provides ::openCatalogPage, LocalOpenTrackAlbum provides ::openTrackAlbum, LocalOpenTrackArtist provides ::openTrackArtist, LocalEdgeInsets provides rememberEdgeInsets(), LocalAppBackdrop provides appBackdrop) {
             BoxWithConstraints(Modifier.fillMaxSize().appSafeArea().menuAnchorTracker().pointerInput(Unit) {
                 awaitPointerEventScope {
@@ -3230,7 +3251,7 @@ homeLoading = homeLoading,
                                 onListenTogether = ::openListenTogether,
                                 onFullscreen = onToggleFullscreen,
                                 onProfile = { if (profilePage != ProfilePage.Home) { pushNavigation(); profilePage = ProfilePage.Home } },
-                                startPadding = if (playerDestination == null) 76.dp else 0.dp, queueWidth = if (playerDestination != null && fullPlayerQueueVisible) QueuePanel.width else 0.dp, endInset = if (playerDestination == null && globalQueueVisible) QueuePanel.width else 0.dp, showLyricsTranslation = playerDestination != null,
+                                startPadding = if (playerDestination == null) 76.dp else 0.dp, queueWidth = if (playerDestination != null && fullPlayerQueueVisible) QueuePanel.width else 0.dp, endInset = if (playerDestination == null && globalQueueVisible) QueuePanel.width else 0.dp, showLyricsTranslation = false,
                             )
     }
 } else {
@@ -3754,7 +3775,7 @@ homeLoading = homeLoading,
                                             pushNavigation(); catalogDestination = null; playerDestination = null; profilePage = ProfilePage.Home
                                         }
                                     },
-                                    startPadding = if (playerDestination == null) 76.dp else 0.dp, queueWidth = if (playerDestination != null && fullPlayerQueueVisible) QueuePanel.width else 0.dp, endInset = if (playerDestination == null && globalQueueVisible) QueuePanel.width else 0.dp, showLyricsTranslation = playerDestination != null,
+                                    startPadding = if (playerDestination == null) 76.dp else 0.dp, queueWidth = if (playerDestination != null && fullPlayerQueueVisible) QueuePanel.width else 0.dp, endInset = if (playerDestination == null && globalQueueVisible) QueuePanel.width else 0.dp, showLyricsTranslation = false,
                                 )
                             }
                             if (playerDestination == null) {
@@ -9200,10 +9221,13 @@ internal fun PlayerPage(
                 val controlsHeight = 250.dp
                 // The column ends above the Lyrics | PiP pill in the bottom-right corner,
                 // so the controls never slide under it (e.g. while the queue is open).
-                val verticalRoom = 28.dp + 92.dp
+                // While the header shows (search), the column moves below it and the
+                // artwork shrinks to fit (a maximised window had the header over the cover).
+                val headerRoom by animateDpAsState(if (PlayerChrome.headerShown) PLAYER_HEADER_ROOM else 0.dp, tween(300), label = "player-header-room")
+                val verticalRoom = 28.dp + 92.dp + headerRoom
                 val artworkSize = minOf(pageHeight * 0.58f, pageHeight - verticalRoom - controlsHeight, pageWidth * 0.42f).coerceIn(200.dp, 640.dp)
                 Column(
-                    Modifier.fillMaxSize().padding(start = 42.dp, end = 42.dp, top = 28.dp, bottom = 92.dp),
+                    Modifier.fillMaxSize().padding(start = 42.dp, end = 42.dp, top = 28.dp + headerRoom, bottom = 92.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
@@ -9638,16 +9662,32 @@ private fun LandscapePageCorners(
                 Icon(if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen, "Toggle fullscreen", tint = Color.White)
             }
         }
-        // Lyrics translation, mirroring the full-screen button in the other top corner
-        // (the header shows its own one, next to Listen Together, while it is visible).
-        // Android has it in the pill below, in place of floating lyrics.
-        if (!android) androidx.compose.animation.AnimatedVisibility(
+        // Search, in the top-right corner: brings the header (hidden on the player
+        // pages) with its search box ready.
+        androidx.compose.animation.AnimatedVisibility(
             visible = !PlayerChrome.headerShown && controlsVisible,
             enter = androidx.compose.animation.fadeIn(tween(300)),
             exit = androidx.compose.animation.fadeOut(tween(200)),
             modifier = Modifier.align(Alignment.TopEnd).padding(end = 19.dp, top = 17.dp),
         ) {
-            LyricsTranslationButton()
+            Surface(
+                shape = CircleShape,
+                color = Color.White.copy(alpha = 0.12f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f)),
+            ) {
+                BouncyIconButton(onClick = { PlayerHeaderRequest.request() }, modifier = Modifier.size(38.dp)) {
+                    Icon(Icons.Default.Search, "Search", tint = Color.White, modifier = Modifier.size(20.dp))
+                }
+            }
+        }
+        // Lyrics translation, in the bottom-left corner (every platform).
+        androidx.compose.animation.AnimatedVisibility(
+            visible = controlsVisible,
+            enter = androidx.compose.animation.fadeIn(tween(300)),
+            exit = androidx.compose.animation.fadeOut(tween(300)),
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 24.dp, bottom = 22.dp),
+        ) {
+            LyricsTranslationButton(buttonSize = 40.dp, iconSize = 21.dp)
         }
         androidx.compose.animation.AnimatedVisibility(
             visible = controlsVisible,
@@ -9673,24 +9713,16 @@ private fun LandscapePageCorners(
                 BouncyIconButton(onClick = onLyrics) {
                     Icon(appPainter("lyrics_icon.png"), "Lyrics", tint = if (lyricsActive) MaterialTheme.colors.primary else Color.White, modifier = Modifier.size(22.dp))
                 }
-                divider()
-                if (android) {
-                    // Android: lyrics translation next to the lyrics button (no floating lyrics).
-                    val translating = LyricsTranslationSettings.enabled
-                    BouncyIconButton(onClick = { LyricsTranslationSettings.toggle() }) {
+                // Floating lyrics (desktop). Translation moved to the bottom-left corner.
+                if (!android) {
+                    divider()
+                    BouncyIconButton(onClick = { FloatingLyricsState.togglePip() }) {
                         Icon(
-                            Icons.Default.Translate,
-                            if (translating) "Turn off lyrics translation" else "Translate lyrics",
-                            tint = if (translating) MaterialTheme.colors.primary else Color.White,
-                            modifier = Modifier.size(22.dp),
+                            if (FloatingLyricsState.isEnabled) Icons.Default.PictureInPictureAlt else Icons.Default.PictureInPicture,
+                            if (FloatingLyricsState.isEnabled) "Disable floating lyrics" else "Enable floating lyrics",
+                            tint = if (FloatingLyricsState.isEnabled) MaterialTheme.colors.primary else Color.White,
                         )
                     }
-                } else BouncyIconButton(onClick = { FloatingLyricsState.togglePip() }) {
-                    Icon(
-                        if (FloatingLyricsState.isEnabled) Icons.Default.PictureInPictureAlt else Icons.Default.PictureInPicture,
-                        if (FloatingLyricsState.isEnabled) "Disable floating lyrics" else "Enable floating lyrics",
-                        tint = if (FloatingLyricsState.isEnabled) MaterialTheme.colors.primary else Color.White,
-                    )
                 }
                 if (onQueue != null) {
                     divider()
@@ -10379,8 +10411,9 @@ internal fun LyricsPage(
                     keep = isQueueVisible || showPageMenu || showAdvanced || showDetails ||
                         showPlaylistPicker || showOffsetEditor || showLyricsEditor || showLyricsSearch,
                 )
+                val lyricsHeaderRoom by animateDpAsState(if (PlayerChrome.headerShown) PLAYER_HEADER_ROOM else 0.dp, tween(300), label = "lyrics-header-room")
                 Box(Modifier.fillMaxSize().reportsActivity(cornerControls)) {
-                Row(Modifier.fillMaxSize().padding(horizontal = 34.dp, vertical = 24.dp)) {
+                Row(Modifier.fillMaxSize().padding(start = 34.dp, end = 34.dp, top = 24.dp + lyricsHeaderRoom, bottom = 24.dp)) {
                     Column(
                         Modifier.weight(0.50f).fillMaxHeight(),
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -10397,6 +10430,10 @@ internal fun LyricsPage(
                         val artworkHeightLimit = if (shortViewport) {
                             minOf(containerHeight * 0.58f, (containerHeight - headerClearance * 2) / 0.88f - controlsBelowArtwork)
                         } else containerHeight * 0.58f
+                        // Room for the header while it shows (summoned with search).
+                        val artworkHeightLimitNow = if (lyricsHeaderRoom > 0.dp) {
+                            minOf(artworkHeightLimit, (containerHeight - lyricsHeaderRoom * 2 - 48.dp) / 0.88f - controlsBelowArtwork)
+                        } else artworkHeightLimit
                         val minimumArtwork = when {
                             ultraShortViewport -> 180.dp
                             shortViewport -> 240.dp
@@ -10405,9 +10442,9 @@ internal fun LyricsPage(
                         // The open queue moves the page aside; the artwork keeps the size it
                         // has without the queue as long as it fits its half of the page
                         // (drawn at 0.88 of the page's scale below).
-                        val artworkSizeHere = minOf(containerWidth * 0.30f, artworkHeightLimit)
+                        val artworkSizeHere = minOf(containerWidth * 0.30f, artworkHeightLimitNow)
                             .coerceAtLeast(minimumArtwork)
-                        val artworkSize = minOf((containerWidth + queueShift) * 0.30f, artworkHeightLimit)
+                        val artworkSize = minOf((containerWidth + queueShift) * 0.30f, artworkHeightLimitNow)
                             .coerceAtLeast(minimumArtwork)
                             .coerceAtMost(maxOf(artworkSizeHere, (containerWidth - 100.dp) * 0.5f / 0.88f))
                         val baseDensity = androidx.compose.ui.platform.LocalDensity.current
@@ -11813,10 +11850,11 @@ private fun LyricsLines(
                 androidx.compose.runtime.key(index, group.startMs) {
                     val distance = kotlin.math.abs(index - scrollTargetIndex)
                     val targetOffset = anchorY + (positions[index] ?: ((index - scrollTargetIndex) * fallbackHeight))
-                    val animatedOffsetState: androidx.compose.runtime.State<Float> = if (AppPlatform.isIos) {
-                        // As Apple Music: the line coming into focus moves first and each line
-                        // under it follows a moment later, on a soft spring, so the lines
-                        // spread a little while they travel and settle together.
+                    // Every platform (it was the iPhone's): as Apple Music, the line coming into
+                    // focus moves first and each line under it follows a moment later, on a soft
+                    // spring, so the lines spread a little while they travel and settle together.
+                    // Only lines near the focus get their own spring (far ones are off screen).
+                    val animatedOffsetState: androidx.compose.runtime.State<Float> = if (distance <= 14 || AppPlatform.isIos) {
                         val follow = (index - scrollTargetIndex + 1).coerceAtLeast(0)
                         val moving = remember { androidx.compose.animation.core.Animatable(targetOffset) }
                         LaunchedEffect(targetOffset, linesSettled) {
@@ -12012,8 +12050,14 @@ private fun smoothPlaybackClock(
     }
     LaunchedEffect(isPlaying, animate, key) {
         if (!isPlaying || !animate) return@LaunchedEffect
-        while (true) withFrameNanos { _ ->
-            frameTick++
+        // At most ~60 updates a second: on 120/144 Hz screens every frame recomposed the
+        // sung line (twice the work for no visible difference in the word fill).
+        var lastTick = 0L
+        while (true) withFrameNanos { frameNanos ->
+            if (frameNanos - lastTick >= 15_000_000L) {
+                lastTick = frameNanos
+                frameTick++
+            }
         }
     }
     @Suppress("UNUSED_EXPRESSION")
@@ -12652,6 +12696,9 @@ private fun DismissPill(
 private object PlayerChrome {
     var headerShown by mutableStateOf(false)
 }
+
+/** The header's height on the player pages (its top padding and the bar). */
+private val PLAYER_HEADER_ROOM = 64.dp
 
 /** ⋮ menu entry: lyrics translation on or off (it used to be a button at the top right). */
 /** Animated artwork on or off (the same switch as Settings > Appearance). */
@@ -13492,4 +13539,29 @@ private class LyricBlurClipShape(private val pad: Float) : androidx.compose.ui.g
     )
     override fun equals(other: Any?): Boolean = other is LyricBlurClipShape && other.pad == pad
     override fun hashCode(): Int = pad.hashCode()
+}
+
+/**
+ * One image loader with a bounded memory cache. Coil's default keeps decoded
+ * pictures up to a fifth of the Java heap on the desktop (several hundred MB of
+ * native memory) and a quarter of the device's memory on the iPhone; covers are
+ * also on disk, so a smaller memory cache costs little.
+ */
+internal object AppImageLoader {
+    private val memoryBytes: Long
+        get() = when {
+            AppPlatform.isIos -> 96L * 1024 * 1024
+            AppPlatform.isAndroid -> 0L // Android keeps Coil's own size (a share of the app's memory)
+            else -> 160L * 1024 * 1024
+        }
+
+    fun install() {
+        val bytes = memoryBytes
+        if (bytes <= 0L) return
+        coil3.SingletonImageLoader.setSafe { context ->
+            coil3.ImageLoader.Builder(context)
+                .memoryCache { coil3.memory.MemoryCache.Builder().maxSizeBytes(bytes).build() }
+                .build()
+        }
+    }
 }

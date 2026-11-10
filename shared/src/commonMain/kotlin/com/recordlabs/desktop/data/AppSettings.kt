@@ -63,6 +63,11 @@ object AppSettings {
      * "flatMini": accent colours, only the mini player without colour.
      */
     val themeStyle = string("themeStyle", "accent")
+    /**
+     * Portrait navigation (and mini player) in the iPhone's liquid glass, on Android and
+     * the desktop. Off by default: the glass redraws the page under it (heavier).
+     */
+    val liquidGlassNavigation = bool("liquidGlassNavigation", false)
     /** Icons and highlights in the neutral colour. */
     val flatTheme: Boolean get() = themeStyle.value == "flat"
     val flatMiniPlayer: Boolean get() = themeStyle.value == "flat" || themeStyle.value == "flatMini"
@@ -258,7 +263,7 @@ object AppDataEvents {
 
 /** The app's own version (from the installer), shown in Settings > About. */
 object AppInfo {
-    private const val BUILD_VERSION = "0.1.8"
+    private const val BUILD_VERSION = "0.1.9"
     val version: String = systemProperty("jpackage.app-version")?.takeIf(String::isNotBlank) ?: systemProperty("recordlabs.app-version")?.takeIf(String::isNotBlank) ?: BUILD_VERSION
 }
 

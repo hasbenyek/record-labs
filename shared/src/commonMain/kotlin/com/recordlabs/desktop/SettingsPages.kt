@@ -544,6 +544,17 @@ internal fun AppearanceSettings() {
             )
         }
     }
+    // The iPhone always has it; Android 13+ and the desktop can turn it on.
+    if (!AppPlatform.isIos && liquidGlassSupported) {
+        var liquidNav by AppSettings.liquidGlassNavigation
+        SettingsGroup("Navigation") {
+            SettingToggle(
+                "Liquid glass navigation",
+                "The iPhone-style glass navigation bar and mini player in portrait. Uses more of the graphics card; turn it off on slower devices.",
+                liquidNav,
+            ) { liquidNav = it }
+        }
+    }
     SettingsGroup("Artwork") {
         SettingToggle("Animated artwork", "Show animated album artwork and music videos when available", animatedArtwork) {
             animatedArtwork = it

@@ -5,7 +5,11 @@ package com.recordlabs.desktop.platform
  * same nodes as before; NSUserDefaults on iOS).
  */
 expect class PrefsNode {
-    fun <T : String?> get(key: String, default: T): T
+    fun get(key: String, default: String): String
+
+    /** The stored text, or [default] (may be null). Not generic: with null, a generic
+     *  result type became Nothing? (java.lang.Void) and the JVM cast the text to it. */
+    fun get(key: String, default: String?): String?
     fun put(key: String, value: String)
     fun getBoolean(key: String, default: Boolean): Boolean
     fun putBoolean(key: String, value: Boolean)

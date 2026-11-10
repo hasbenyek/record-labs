@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.ceil
+import com.recordlabs.desktop.platform.AppPlatform
 
 /**
  * Liquid glass for the floating navigation and mini player (iPhone).
@@ -165,7 +166,8 @@ internal expect val liquidGlassSupported: Boolean
 /** A recorder for the page under the glass, or null where the glass is not drawn. */
 @Composable
 internal fun rememberGlassBackdrop(onDemand: Boolean = false): GlassBackdrop? {
-    if (!liquidGlassSupported) return null
+    // Android and the desktop: only with Settings > Appearance > Liquid glass navigation.
+    if (!liquidGlassSupported || !(AppPlatform.isIos || com.recordlabs.desktop.data.AppSettings.liquidGlassNavigation.value)) return null
     val layer = rememberGraphicsLayer()
     val backdrop = remember(layer) { GlassBackdrop(layer, onDemand) }
     // Other changes under the glass (a picture loading, an animation) show within a
@@ -303,3 +305,72 @@ internal fun Modifier.glassShadow(
         }
     }
 }
+
+/** The glass shader (Skia SkSL; Android's AGSL reads it as well). */
+internal const val LIQUID_GLASS_SKSL = """
+// Liquid glass (dark, like Telegram's): the (blurred) page behind, bent at the rim like a
+// glass lens, a little colour split at the edge, a dark tint, a light rim, and a soft
+// light where the finger holds the glass (it moves with the finger).
+uniform shader content;
+uniform float2 origin;     // the glass's top-left inside the recorded area (px)
+uniform float2 size;       // the glass's size (px)
+uniform float radius;      // corner radius (px)
+uniform float bezel;       // width of the bent rim (px)
+uniform float bend;        // how far the rim bends the page (px)
+uniform float dpx;         // one dp in px
+uniform float2 touch;      // the finger, in the recorded area (px)
+uniform float press;       // 0 (not held) .. 1 (held)
+uniform float2 validMin;   // the page's part of the recorded area (outside it: nothing)
+uniform float2 validMax;
+uniform float tintMul;     // how much of the page shows through (the dock: 0.60)
+uniform float tintAdd;     // the glass's own grey
+uniform float sat;         // colour boost of the page behind
+
+float sdRound(float2 p, float2 c, float2 h, float r) {
+    float2 q = abs(p - c) - (h - r);
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+
+half4 main(float2 coord) {
+    float2 c = origin + size * 0.5;
+    float2 h = size * 0.5;
+    float r = min(radius, min(h.x, h.y));
+    float d = sdRound(coord, c, h, r);
+    if (d > 0.5) return half4(0.0);
+    // Outward normal of the edge (the shape's gradient).
+    float e = 0.75;
+    float2 n = float2(
+        sdRound(coord + float2(e, 0.0), c, h, r) - sdRound(coord - float2(e, 0.0), c, h, r),
+        sdRound(coord + float2(0.0, e), c, h, r) - sdRound(coord - float2(0.0, e), c, h, r));
+    float nl = length(n);
+    n = nl > 0.0001 ? n / nl : float2(0.0, -1.0);
+    float inside = -d;                                  // px from the edge, inwards
+    float x = clamp(1.0 - inside / bezel, 0.0, 1.0);    // 1 at the edge, 0 past the rim
+    // A round lens edge; held, the glass bends a little more (it swells).
+    float lens = bend * (1.0 + 0.35 * press) * (1.0 - sqrt(max(1.0 - x * x, 0.0)));
+    // The rim shows what is just outside it, bent in; each colour a little apart.
+    half4 col;
+    col.r = content.eval(clamp(coord + n * lens * 1.00, validMin, validMax)).r;
+    col.g = content.eval(clamp(coord + n * lens * 1.12, validMin, validMax)).g;
+    col.b = content.eval(clamp(coord + n * lens * 1.26, validMin, validMax)).b;
+    col.a = 1.0;
+    // More colour, then the dark glass tint (the page still shows through).
+    half l = dot(col.rgb, half3(0.299, 0.587, 0.114));
+    col.rgb = mix(half3(l), col.rgb, half(sat));
+    col.rgb = col.rgb * half(tintMul) + half3(half(tintAdd));
+    // Light from the top left, or from the finger while it holds the glass.
+    float2 toTouch = touch - coord;
+    float2 lightDir = normalize(mix(float2(-0.6, -0.8), length(toTouch) > 1.0 ? normalize(toTouch) : float2(-0.6, -0.8), press));
+    float facing = dot(n, lightDir);
+    float rimBand = 1.0 - smoothstep(0.0, 1.5 * dpx, inside);
+    float glowBand = 1.0 - smoothstep(0.0, 10.0 * dpx, inside);
+    float rim = rimBand * (0.22 + 0.60 * pow(max(facing, 0.0), 1.5) + 0.18 * pow(max(-facing, 0.0), 2.0));
+    float glow = glowBand * 0.08 * (0.4 + 0.6 * max(facing, 0.0));
+    // The finger's light: a soft spot under it while held.
+    float spot = press * 0.16 * exp(-dot(toTouch, toTouch) / (2.0 * (34.0 * dpx) * (34.0 * dpx)));
+    col.rgb += half3(rim + glow + spot);
+    // Soft edge (anti-aliased).
+    float cover = clamp(0.5 - d, 0.0, 1.0);
+    return half4(clamp(col.rgb, 0.0, 1.0) * cover, cover);
+}
+"""
