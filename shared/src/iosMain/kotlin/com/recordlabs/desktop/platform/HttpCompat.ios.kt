@@ -22,7 +22,6 @@ import platform.Foundation.dataWithBytes
 import platform.Foundation.setHTTPBody
 import platform.Foundation.setHTTPMethod
 import platform.Foundation.setHTTPShouldHandleCookies
-import platform.Foundation.NSHTTPCookieAcceptPolicyNever
 import platform.Foundation.setValue
 import platform.darwin.DISPATCH_TIME_FOREVER
 import platform.darwin.NSObject
@@ -61,7 +60,6 @@ private class NoRedirects : NSObject(), NSURLSessionTaskDelegateProtocol {
 internal fun NSURLSessionConfiguration.withoutCookies(): NSURLSessionConfiguration = apply {
     HTTPCookieStorage = null
     HTTPShouldSetCookies = false
-    HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever
 }
 
 actual object PlatformHttp {
