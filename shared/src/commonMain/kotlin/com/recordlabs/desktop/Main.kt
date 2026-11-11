@@ -90,6 +90,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -160,6 +161,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -6264,19 +6266,67 @@ private fun HomeShelfSection(shelf: HomeShelf, compact: Boolean, onTrackMore: (T
 @Composable
 private fun HomeMoodFilters(chips: List<HomeChip>, selected: HomeChip?, onSelect: (HomeChip) -> Unit) {
     val scrollState = rememberScrollState()
+    GlassChipRow(Modifier.fillMaxWidth()) { glass ->
     Row(
         Modifier.fillMaxWidth().horizontalScroll(scrollState).dragHorizontally(scrollState).padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         chips.forEach { chip ->
-            Surface(
-                modifier = Modifier.clickable { onSelect(chip) },
-                color = if (selected?.params == chip.params) Accent else Elevated,
-                shape = RoundedCornerShape(22.dp),
-            ) {
-                Text(chip.title, color = if (selected?.params == chip.params) Color.Black else SecondaryText, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp))
-            }
+            val isSelected = selected?.params == chip.params
+            CategoryChip(
+                chip.title, isSelected, glass, { onSelect(chip) },
+                idleColor = Elevated, idleText = SecondaryText, radius = 22.dp,
+                padding = PaddingValues(horizontal = 16.dp, vertical = 9.dp),
+            )
         }
+    }
+    }
+}
+
+/**
+ * A row of category chips (Home's moods, the search filters): with Settings > Appearance >
+ * Liquid Glass Material, clear liquid glass that stretches when pulled, as the other glass
+ * buttons. Their glass reads a see-through recording beside the chips (never the chips
+ * themselves), so the page behind shows through clearly with the glass's lit rim.
+ */
+@Composable
+private fun GlassChipRow(modifier: Modifier = Modifier, content: @Composable (GlassBackdrop?) -> Unit) {
+    val glass = rememberGlassBackdrop(onDemand = true)
+    Box(modifier) {
+        if (glass != null) Box(Modifier.matchParentSize().glassBackdropSource(glass))
+        content(glass)
+    }
+}
+
+@Composable
+private fun CategoryChip(
+    label: String,
+    selected: Boolean,
+    glass: GlassBackdrop?,
+    onClick: () -> Unit,
+    idleColor: Color,
+    idleText: Color,
+    radius: Dp,
+    padding: PaddingValues,
+) {
+    val shape = RoundedCornerShape(radius)
+    val onGlass = glass != null
+    Surface(
+        modifier = Modifier.liquidGlassInteractive(glass, clear = true),
+        color = when {
+            selected -> Accent
+            onGlass -> Color.Transparent
+            else -> idleColor
+        },
+        border = if (onGlass && !selected) BorderStroke(0.8.dp, Color.White.copy(alpha = 0.16f)) else null,
+        shape = shape,
+    ) {
+        Text(
+            label,
+            color = if (selected) Color.Black else if (onGlass) Color.White else idleText,
+            fontSize = 13.sp,
+            modifier = Modifier.clip(shape).clickable(onClick = onClick).padding(padding),
+        )
     }
 }
 
@@ -6496,7 +6546,8 @@ private fun SearchPage(
 
     Column(Modifier.fillMaxSize()) {
         // Portrait: the search box is in the see-through header above the page.
-        Spacer(Modifier.height((if (compact) 72.dp else 56.dp) + statusBarRoom(compact)))
+        // Landscape: a little room under the search box (the filter chips touched it).
+        Spacer(Modifier.height((if (compact) 72.dp else 64.dp) + statusBarRoom(compact)))
         if (compact) {
             // Typing in the header after a search goes back to the suggestions.
             LaunchedEffect(query) {
@@ -6510,13 +6561,19 @@ private fun SearchPage(
 
         val currentResults = results
         if (submittedQuery != null && currentResults?.filters?.isNotEmpty() == true) {
+            GlassChipRow(Modifier.fillMaxWidth()) { glass ->
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 currentResults.filters.forEach { chip ->
-                    LibraryFilterChip(chip, filter == chip) { filter = chip }
+                    CategoryChip(
+                        chip, filter == chip, glass, { filter = chip },
+                        idleColor = SurfaceColor, idleText = Color.White, radius = 18.dp,
+                        padding = PaddingValues(horizontal = 15.dp, vertical = 8.dp),
+                    )
                 }
+            }
             }
         }
         
@@ -9841,10 +9898,14 @@ private fun PlayerCornersOverlay(backdrop: GlassBackdrop?, appOrigin: androidx.c
             .size(with(density) { bounds.width.toDp() }, with(density) { bounds.height.toDp() }),
     ) {
         // (Nothing over the whole page takes the pointer: the lyrics under it stay usable.)
-        LandscapePageCornerButtons(
-            spec.isFullscreen, spec.onToggleFullscreen, spec.lyricsActive, spec.onLyrics, spec.onDevices,
-            spec.queueActive, spec.onQueue, spec.onClose, spec.controlsVisible, backdrop, spec.leftCovered, spec.idle,
-        )
+        // The player page's lighter accent (drawn over the page, these buttons were outside
+        // it: a lit lyrics or translate icon in the artwork's own red on the red background).
+        PlayerPageAccentTheme {
+            LandscapePageCornerButtons(
+                spec.isFullscreen, spec.onToggleFullscreen, spec.lyricsActive, spec.onLyrics, spec.onDevices,
+                spec.queueActive, spec.onQueue, spec.onClose, spec.controlsVisible, backdrop, spec.leftCovered, spec.idle,
+            )
+        }
     }
 }
 
@@ -10392,7 +10453,14 @@ internal fun LyricsPage(
         value = emptyMap()
         if (!translationEnabled || lyricGroups.isEmpty()) return@produceState
         val texts = lyricGroups.flatMap { it.lines }.map(::lyricPlainText)
-        value = WindowsLyricsTranslator.translate(texts, translationTarget).orEmpty()
+        // Tried again a few times when no service answered (switched on in the middle of a
+        // song on a phone's network, the translation never came until the next song).
+        for (wait in longArrayOf(0L, 2_000L, 5_000L, 10_000L)) {
+            if (wait > 0L) kotlinx.coroutines.delay(wait)
+            val translated = WindowsLyricsTranslator.translate(texts, translationTarget) ?: continue
+            value = translated
+            break
+        }
     }
     // Positive offset delays the lyric; negative offset advances it. Worked out where
     // the lines are drawn (see [LyricsAtPosition]), not here: the whole page used to
@@ -11701,11 +11769,15 @@ private fun LyricsLines(
     /** A preview (the player's lyrics): no scrolling; a tap anywhere calls this (opens the lyrics page). */
     onTap: (() -> Unit)? = null,
 ) {
-    var manualBrowseOverride by remember { mutableStateOf(false) }
+    // Browsing the lyrics by hand (every platform, as the iPhone): they stay where they were
+    // left, a Sync button takes them back to the song (it no longer pulled them back by
+    // itself, at the next line or after a few seconds). A new song starts in sync.
+    var manualBrowseOverride by remember(groups) { mutableStateOf(false) }
     val latestOnTap by androidx.compose.runtime.rememberUpdatedState(onTap)
     // While the main window is minimized the lyrics stand still at the last
-    // position shown (the music plays on) and catch up when it is back.
-    val windowShown = MainWindowActivity.isShown
+    // position shown (the music plays on) and catch up when it is back. (In the
+    // background on another screen they keep moving; only the pictures pause.)
+    val windowShown = MainWindowActivity.isOnScreen
     val heldPosition = remember(groups) { longArrayOf(positionMs, activeGroupIndex.toLong()) }
     if (windowShown) {
         heldPosition[0] = positionMs
@@ -11750,7 +11822,7 @@ private fun LyricsLines(
     var userManualOffset by remember(groups) { mutableStateOf(0f) }
     // iPhone: browsing the lyrics by hand, as in Apple Music: the list follows the finger,
     // glides on after a flick, and goes back to the song a few seconds after the last touch.
-    val iosBrowse = AppPlatform.isIos
+    val iosBrowse = true
     val lyricsScope = rememberCoroutineScope()
     var lastManualAt by remember { mutableStateOf(0L) }
     var flingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -11760,31 +11832,31 @@ private fun LyricsLines(
     val latestScrollTarget by androidx.compose.runtime.rememberUpdatedState(scrollTargetIndex)
     var frozenTarget by remember { mutableStateOf(-1) }
     val layoutTargetIndex = if (iosBrowse && manualBrowseOverride && frozenTarget >= 0) frozenTarget else scrollTargetIndex
-    if (iosBrowse) LaunchedEffect(manualBrowseOverride, lastManualAt) {
-        if (!manualBrowseOverride) return@LaunchedEffect
-        kotlinx.coroutines.delay(3_200L)
+    // The mouse wheel glides there too (it jumped a step at a time).
+    val wheel = remember { floatArrayOf(0f, 0f) } // [target, 1 while gliding]
+    // Back to the song: the lines take their places on their springs as the list returns.
+    fun syncLyrics() {
         flingJob?.cancel()
-        val start = userManualOffset
-        val animation = androidx.compose.animation.core.Animatable(start)
-        animation.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 140f)) { userManualOffset = value }
-        userManualOffset = 0f
+        wheel[1] = 0f
         manualBrowseOverride = false
-    }
-    if (!iosBrowse) LaunchedEffect(scrollTargetIndex) {
-        if (manualBrowseOverride) {
-            val start = userManualOffset
-            val animation = androidx.compose.animation.core.Animatable(start)
-            animation.animateTo(
-                0f,
-                tween((kotlin.math.abs(start) / 4f).toInt().coerceIn(200, 600), easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            ) { userManualOffset = value }
+        frozenTarget = -1
+        flingJob = lyricsScope.launch {
+            val animation = androidx.compose.animation.core.Animatable(userManualOffset)
+            animation.animateTo(0f, spring(dampingRatio = 0.9f, stiffness = 160f)) { userManualOffset = value }
             userManualOffset = 0f
-            manualBrowseOverride = false
         }
     }
+    val lyricsGlass = rememberGlassBackdrop(onDemand = true)
+    // A line tapped while browsing: the song goes there and the lyrics follow it again.
+    val seekAndSync: (Long) -> Unit = { ms ->
+        if (manualBrowseOverride) syncLyrics()
+        onSeek(ms)
+    }
 
+    Box(modifier) {
     BoxWithConstraints(
-        modifier
+        Modifier.fillMaxSize()
+            .glassBackdropSource(lyricsGlass)
             .clipToBounds()
             .graphicsLayer { alpha = 0.99f }
             .drawWithContent {
@@ -11806,9 +11878,19 @@ private fun LyricsLines(
             .onPointerEvent(PointerEventType.Scroll) { event ->
                 val change = event.changes.firstOrNull() ?: return@onPointerEvent
                 val delta = change.scrollDelta.y
-                if (delta != 0f) {
+                if (delta != 0f && latestOnTap == null) {
+                    if (!manualBrowseOverride) frozenTarget = latestScrollTarget
                     manualBrowseOverride = true
-                    userManualOffset -= delta * 42f
+                    flingJob?.cancel()
+                    val limit = manualExtent[0]
+                    val from = if (wheel[1] > 0f) wheel[0] else userManualOffset
+                    wheel[0] = (from - delta * 56f).let { if (limit > 0f) it.coerceIn(-limit, limit) else it }
+                    wheel[1] = 1f
+                    flingJob = lyricsScope.launch {
+                        val glide = androidx.compose.animation.core.Animatable(userManualOffset)
+                        glide.animateTo(wheel[0], spring(dampingRatio = 1f, stiffness = 320f)) { userManualOffset = value }
+                        wheel[1] = 0f
+                    }
                     change.consume()
                 }
             }
@@ -11820,6 +11902,7 @@ private fun LyricsLines(
                     detectVerticalDragGestures(
                         onDragStart = {
                             flingJob?.cancel()
+                            wheel[1] = 0f
                             tracker.resetTracking()
                             if (!manualBrowseOverride) frozenTarget = latestScrollTarget
                             manualBrowseOverride = true
@@ -12170,13 +12253,13 @@ private fun LyricsLines(
                             ) {
                                 TimedLyricText(
                                     line, lineIsActive, displayPositionMs, isPlaying, textSize, alignment,
-                                    onSeek, depthAlpha, depthBlur, lineTransitionDelay, pronunciationEnabled,
+                                    seekAndSync, depthAlpha, depthBlur, lineTransitionDelay, pronunciationEnabled,
                                 )
     }
 } else {
                             TimedLyricText(
                                 line, lineIsActive, displayPositionMs, isPlaying, textSize, alignment,
-                                onSeek, depthAlpha, depthBlur, lineTransitionDelay, pronunciationEnabled,
+                                seekAndSync, depthAlpha, depthBlur, lineTransitionDelay, pronunciationEnabled,
                             )
     }
 }
@@ -12185,6 +12268,31 @@ private fun LyricsLines(
         }
     }
 }
+    // Back to the song after browsing by hand: liquid glass (Settings > Appearance >
+    // Liquid Glass Material), else as the lyrics and picture-in-picture buttons.
+    androidx.compose.animation.AnimatedVisibility(
+        visible = manualBrowseOverride && onTap == null && !onlyActiveLine && groups.isNotEmpty(),
+        enter = fadeIn(tween(220)) + androidx.compose.animation.scaleIn(tween(260), initialScale = 0.85f),
+        exit = fadeOut(tween(180)) + androidx.compose.animation.scaleOut(tween(180), targetScale = 0.9f),
+        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 18.dp),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = if (lyricsGlass != null) Color.Transparent else Color.White.copy(alpha = 0.12f),
+            border = BorderStroke(if (lyricsGlass != null) 0.8.dp else 1.dp, Color.White.copy(alpha = if (lyricsGlass != null) 0.16f else 0.14f)),
+            modifier = Modifier.liquidGlassInteractive(lyricsGlass, clear = true),
+        ) {
+            Row(
+                Modifier.clip(RoundedCornerShape(50)).clickable { syncLyrics() }.padding(horizontal = 16.dp, vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(Icons.Default.Sync, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Text("Sync", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+    }
 }
 
 @Composable
@@ -13770,8 +13878,17 @@ fun TrackTitleText(
     val onOpenCatalog = LocalOpenCatalog.current.takeIf { currentTrackLinks().title }
     val onOpenTrackAlbum = LocalOpenTrackAlbum.current
     var hovered by remember { mutableStateOf(false) }
+    // A big title's line (the player and lyrics pages, 18-23sp) was the theme's 24sp:
+    // shorter than the letters, so a "p" or "g" lost its bottom where the line is clipped
+    // (the sideways scroll). The line is now as tall as the letters need.
+    val baseStyle = androidx.compose.material.LocalTextStyle.current
+    val roomyLine = if (fontSize.isSp) (fontSize.value * 1.34f).sp else androidx.compose.ui.unit.TextUnit.Unspecified
+    val titleStyle = if (roomyLine.isSp && (!baseStyle.lineHeight.isSp || baseStyle.lineHeight.value < roomyLine.value)) {
+        baseStyle.copy(lineHeight = roomyLine)
+    } else baseStyle
     Text(
         text = track.title,
+        style = titleStyle,
         color = color,
         fontSize = fontSize,
         fontWeight = fontWeight,

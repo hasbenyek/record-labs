@@ -620,6 +620,23 @@ fun runDesktopApp(args: Array<String>) {
                     FloatingLyricsState.requestRestoreDesktop = null
                 }
             }
+            // Another window in use (Settings > Appearance > Pause visuals in the background):
+            // the moving pictures pause after a moment (a quick switch, or a menu of the app's
+            // own, changes nothing) and go on at once when the window is used again.
+            val windowFocused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
+            val pauseInBackground = com.recordlabs.desktop.data.AppSettings.pauseVisualsInBackground.value
+            LaunchedEffect(windowFocused, pauseInBackground) {
+                if (windowFocused || !pauseInBackground) {
+                    MainWindowActivity.updateActive(true)
+                } else {
+                    kotlinx.coroutines.delay(1_200)
+                    val focusedWindow = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow
+                    // One of the app's own windows (a dialog of the main window) counts as in use.
+                    if (focusedWindow == null || (focusedWindow !== window && focusedWindow.owner !== window)) {
+                        MainWindowActivity.updateActive(false)
+                    }
+                }
+            }
             val densityScale = DesktopUiScale.effectiveDensityScale()
             val baseDensity = androidx.compose.ui.platform.LocalDensity.current
             val customDensity = remember(baseDensity, densityScale) {

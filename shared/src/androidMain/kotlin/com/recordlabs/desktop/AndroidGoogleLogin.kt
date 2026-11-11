@@ -5,11 +5,23 @@ import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.recordlabs.desktop.data.WindowsPreferences
 import com.recordlabs.innertube.YouTube
@@ -32,8 +44,24 @@ private const val ANDROID_LOGIN_URL = "https://accounts.google.com/ServiceLogin?
 internal fun AndroidGoogleLogin(onAuthenticated: () -> Unit) {
     val scope = rememberCoroutineScope()
     val latestOnAuthenticated = rememberUpdatedState(onAuthenticated)
-    AndroidView(
+    // The sign-in page was glitchy: the web view was made while the page still slid in
+    // (a web view draws badly while it moves), showed a blank white page on the dark app
+    // while Google's page loaded, and the keyboard covered the e-mail and password (the
+    // app draws under it). Now it is made once the page is in place, shown once Google's
+    // page is there (a spinner until then), and kept above the keyboard.
+    var mounted by remember { mutableStateOf(false) }
+    var pageShown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(420)
+        mounted = true
+        // A slow or failed page still shows (with the web view's own error) after a while.
+        kotlinx.coroutines.delay(8000)
+        pageShown = true
+    }
+    Box(Modifier.fillMaxSize().imePadding()) {
+    if (mounted) AndroidView(
         modifier = Modifier.fillMaxSize(),
+        update = { view -> view.visibility = if (pageShown) android.view.View.VISIBLE else android.view.View.INVISIBLE },
         factory = { context ->
             val ids = object {
                 @Volatile var visitorData = ""
@@ -53,12 +81,19 @@ internal fun AndroidGoogleLogin(onAuthenticated: () -> Unit) {
             }
             CookieManager.getInstance().setAcceptCookie(true)
             WebView(context).apply {
+                // The app's dark background behind the page, never a white flash.
+                setBackgroundColor(android.graphics.Color.rgb(18, 18, 18))
+                visibility = android.view.View.INVISIBLE
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                 addJavascriptInterface(ids, "Android")
                 webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String?) {
+                        if (url?.startsWith("http") == true && !pageShown) {
+                            pageShown = true
+                            view.visibility = android.view.View.VISIBLE
+                        }
                         view.loadUrl("javascript:Android.onRetrieveVisitorData(window.yt.config_.VISITOR_DATA)")
                         view.loadUrl("javascript:Android.onRetrieveDataSyncId(window.yt.config_.DATASYNC_ID)")
                         if (ids.done || ids.completing || url?.contains("music.youtube.com") != true) return
@@ -103,4 +138,10 @@ internal fun AndroidGoogleLogin(onAuthenticated: () -> Unit) {
             }
         },
     )
+    if (!pageShown) CircularProgressIndicator(
+        Modifier.align(Alignment.Center).size(34.dp),
+        color = Color.White.copy(alpha = 0.8f),
+        strokeWidth = 3.dp,
+    )
+    }
 }

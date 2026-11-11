@@ -14,6 +14,9 @@ import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.parameters
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -162,7 +165,13 @@ object WindowsLyricsTranslator {
             locked(memory) { memory[key] = cached }
             return@withContext cached
         }
+        // Google once more after a moment before the slower fallback: a single failed
+        // request (a timeout, a rate limit on a phone's network) gave up on the song.
         val translated = runCatching { translateWithGoogle(distinct, target) }.getOrNull()
+            ?: run {
+                kotlinx.coroutines.delay(1_500L)
+                runCatching { translateWithGoogle(distinct, target) }.getOrNull()
+            }
             ?: runCatching { translateWithMyMemory(distinct, target) }.getOrNull()
             ?: return@withContext null
         val result = distinct.indices.mapNotNull { index ->
@@ -218,25 +227,32 @@ object WindowsLyricsTranslator {
         return results
     }
 
-    /** MyMemory (free, no key, a daily limit): one line at a time. */
-    private suspend fun translateWithMyMemory(lines: List<String>, target: String): List<Pair<String, String?>>? {
-        val results = ArrayList<Pair<String, String?>>(lines.size)
-        for (line in lines) {
-            val body = withTimeoutOrNull(15_000L) {
-                client.get("https://api.mymemory.translated.net/get") {
-                    parameter("q", line)
-                    parameter("langpair", "Autodetect|${myMemoryCode(target)}")
-                }.takeIf { it.status.value == 200 }?.bodyAsText()
-            } ?: return null
-            val root = runCatching { jsonCodec.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
-            if (root["quotaFinished"]?.jsonPrimitive?.contentOrNull == "true") return null
-            // Errors (limits, unsupported languages) come back as "translations" too.
-            if (root["responseStatus"]?.jsonPrimitive?.contentOrNull?.trim() != "200") return null
-            val data = root["responseData"] as? JsonObject ?: return null
-            results += (data["translatedText"]?.jsonPrimitive?.contentOrNull.orEmpty() to
-                data["detectedLanguage"]?.jsonPrimitive?.contentOrNull)
-        }
-        return results
+    /**
+     * MyMemory (free, no key, a daily limit): one line per request, several at a time
+     * (one after another, a song took minutes: it looked as if translation did nothing).
+     */
+    private suspend fun translateWithMyMemory(lines: List<String>, target: String): List<Pair<String, String?>>? = kotlinx.coroutines.coroutineScope {
+        val gate = kotlinx.coroutines.sync.Semaphore(6)
+        val answers = lines.map { line ->
+            async { gate.withPermit { myMemoryLine(line, target) } }
+        }.awaitAll()
+        if (answers.any { it == null }) null else answers.map { it!! }
+    }
+
+    private suspend fun myMemoryLine(line: String, target: String): Pair<String, String?>? {
+        val body = withTimeoutOrNull(15_000L) {
+            client.get("https://api.mymemory.translated.net/get") {
+                parameter("q", line)
+                parameter("langpair", "Autodetect|${myMemoryCode(target)}")
+            }.takeIf { it.status.value == 200 }?.bodyAsText()
+        } ?: return null
+        val root = runCatching { jsonCodec.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+        if (root["quotaFinished"]?.jsonPrimitive?.contentOrNull == "true") return null
+        // Errors (limits, unsupported languages) come back as "translations" too.
+        if (root["responseStatus"]?.jsonPrimitive?.contentOrNull?.trim() != "200") return null
+        val data = root["responseData"] as? JsonObject ?: return null
+        return data["translatedText"]?.jsonPrimitive?.contentOrNull.orEmpty() to
+            data["detectedLanguage"]?.jsonPrimitive?.contentOrNull
     }
 
     private fun myMemoryCode(code: String): String = when (code) {

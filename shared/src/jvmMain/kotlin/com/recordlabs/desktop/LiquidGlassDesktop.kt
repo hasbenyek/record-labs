@@ -44,6 +44,7 @@ internal actual fun liquidGlassRenderEffect(
         builder.uniform("tintMul", if (frosted) 0.42f else if (clear) 0.94f else 0.60f)
         builder.uniform("tintAdd", if (frosted) 0.055f else if (clear) 0.012f else 0.035f)
         builder.uniform("sat", if (frosted) 1.55f else if (clear) 1.12f else 1.35f)
+        builder.uniform("seeThrough", if (clear) 1f else 0f)
         builder.uniform("dpx", density)
         builder.uniform("touch", touchX + margin, touchY + margin)
         builder.uniform("press", press.coerceIn(0f, 1f))

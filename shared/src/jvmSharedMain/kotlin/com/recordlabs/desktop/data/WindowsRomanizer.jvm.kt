@@ -48,6 +48,9 @@ actual object WindowsRomanizer {
         if (start < 0 || end > text.length || !surface.hasNonLatinLetter()) return@mapNotNull null
         val reading = token.reading.takeUnless { it.isNullOrBlank() || it == "*" } ?: surface
         val latin = synchronized(kanaTransliterator) { kanaTransliterator.transliterate(reading) }.trim().lowercase()
+            // A small っ ending a word ("怒っ|て") came out as "oko~tsu": it doubles the next
+            // word's first letter, so here it is a "t" (okot te).
+            .replace("~tsu", "t").replace("~", "")
         if (latin.isBlank() || latin == surface) null else RomanWord(start, end, latin)
     }
 

@@ -40,6 +40,7 @@ internal actual fun liquidGlassRenderEffect(
         shader.setFloatUniform("tintMul", if (frosted) 0.42f else if (clear) 0.94f else 0.60f)
         shader.setFloatUniform("tintAdd", if (frosted) 0.055f else if (clear) 0.012f else 0.035f)
         shader.setFloatUniform("sat", if (frosted) 1.55f else if (clear) 1.12f else 1.35f)
+        shader.setFloatUniform("seeThrough", if (clear) 1f else 0f)
         shader.setFloatUniform("dpx", density)
         shader.setFloatUniform("touch", touchX + margin, touchY + margin)
         shader.setFloatUniform("press", press.coerceIn(0f, 1f))

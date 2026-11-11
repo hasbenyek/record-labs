@@ -69,6 +69,12 @@ object AppSettings {
      * default: the glass redraws the page under it (heavier). The iPhone always has it.
      */
     val liquidGlassMaterial = bool("liquidGlassMaterial", false)
+    /**
+     * Desktop: while another window is in use (the app open on a second screen), the
+     * music video, animated artwork and the moving background colours pause; the music
+     * and lyrics go on. On by default (much less work for the graphics card).
+     */
+    val pauseVisualsInBackground = bool("pauseVisualsInBackground", true)
     /** Icons and highlights in the neutral colour. */
     val flatTheme: Boolean get() = themeStyle.value == "flat"
     val flatMiniPlayer: Boolean get() = themeStyle.value == "flat" || themeStyle.value == "flatMini"
@@ -264,7 +270,7 @@ object AppDataEvents {
 
 /** The app's own version (from the installer), shown in Settings > About. */
 object AppInfo {
-    private const val BUILD_VERSION = "0.1.8"
+    private const val BUILD_VERSION = "0.1.9"
     val version: String = systemProperty("jpackage.app-version")?.takeIf(String::isNotBlank) ?: systemProperty("recordlabs.app-version")?.takeIf(String::isNotBlank) ?: BUILD_VERSION
 }
 
