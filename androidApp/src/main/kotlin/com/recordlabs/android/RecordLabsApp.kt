@@ -32,6 +32,7 @@ class RecordLabsApp : Application() {
         // The in-app updates only replace the release app itself (see AndroidUpdates).
         Platform.androidPackageName = packageName
         Platform.androidDataRoot = File(filesDir, "record-labs").apply { mkdirs() }
+        Platform.androidDiagnosticsRoot = runCatching { getExternalFilesDir(null) }.getOrNull()
         Platform.androidCacheRoot = File(cacheDir, "record-labs").apply { mkdirs() }
         Platform.androidDeviceName = listOf(Build.MANUFACTURER, Build.MODEL)
             .filter { !it.isNullOrBlank() }

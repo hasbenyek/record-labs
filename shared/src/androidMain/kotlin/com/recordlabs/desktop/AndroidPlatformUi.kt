@@ -30,7 +30,8 @@ import com.recordlabs.desktop.data.hasMusicVideo
  */
 @Composable
 actual fun Modifier.progressiveHeaderBlur(compact: Boolean, footerHeight: Dp, headerHeight: Dp, headerHide: () -> Float): Modifier {
-    if (compact || android.os.Build.VERSION.SDK_INT < 33) return this
+    // Nothing to blur (liquid glass: no blur behind the header or the navigation).
+    if (compact || android.os.Build.VERSION.SDK_INT < 33 || (footerHeight.value <= 0f && headerHeight.value <= 0f)) return this
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     // A shader the device cannot compile leaves the page unblurred instead of failing.
     val shaders = remember {

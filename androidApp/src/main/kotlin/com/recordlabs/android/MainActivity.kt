@@ -43,7 +43,10 @@ class MainActivity : ComponentActivity() {
         }
         takeWidgetCommand(intent)
         setContent {
-            Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.safeDrawing)) {
+            // No system-bar padding here: the app draws under the navigation bar itself and
+            // keeps its controls clear of it (EdgeToEdge.kt). Padding here left a black strip
+            // round the gesture bar, in portrait and landscape.
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
                 RecordLabsAndroidContent()
             }
         }

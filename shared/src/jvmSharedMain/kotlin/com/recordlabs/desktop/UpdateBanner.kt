@@ -1,5 +1,7 @@
 package com.recordlabs.desktop
 
+import com.recordlabs.desktop.platform.*
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -51,7 +53,7 @@ import kotlinx.coroutines.delay
  */
 @Composable
 internal fun AndroidUpdateBanner(modifier: Modifier = Modifier) {
-    if (!Platform.isAndroid) return
+    if (!AppPlatform.isAndroid) return
     // At launch, and again every few hours while the app stays open.
     LaunchedEffect(Unit) {
         while (true) {

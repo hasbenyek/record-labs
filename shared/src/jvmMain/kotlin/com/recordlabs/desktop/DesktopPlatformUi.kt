@@ -68,33 +68,35 @@ actual fun copyToClipboard(text: String) {
     }
 }
 
-actual fun pickMusicFolder(title: String, onPicked: (java.io.File) -> Unit) {
+actual fun pickMusicFolder(title: String, onPicked: (com.recordlabs.desktop.platform.File) -> Unit) {
     val chooser = javax.swing.JFileChooser(System.getProperty("user.home")).apply {
         dialogTitle = title
         fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
     }
-    if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) onPicked(chooser.selectedFile)
+    if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) onPicked(com.recordlabs.desktop.platform.File.wrap(chooser.selectedFile))
 }
 
 @Composable
 actual fun PlatformBackHandler(onBack: () -> Boolean) = Unit
 
-actual fun pickBackupSaveFile(defaultName: String, onPicked: (java.io.File) -> Unit) {
+actual fun pickBackupSaveFile(defaultName: String, onPicked: (com.recordlabs.desktop.platform.File) -> Unit) {
     val chooser = javax.swing.JFileChooser().apply {
         dialogTitle = "Save Record Labs backup"
         selectedFile = java.io.File(System.getProperty("user.home"), defaultName)
         fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Record Labs backup (*.zip)", "zip")
     }
-    if (chooser.showSaveDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) onPicked(chooser.selectedFile)
+    if (chooser.showSaveDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) onPicked(com.recordlabs.desktop.platform.File.wrap(chooser.selectedFile))
 }
 
-actual fun pickBackupOpenFile(onPicked: (java.io.File) -> Unit) {
+actual fun pickBackupOpenFile(onPicked: (com.recordlabs.desktop.platform.File) -> Unit) {
     val chooser = javax.swing.JFileChooser(System.getProperty("user.home")).apply {
         dialogTitle = "Open Record Labs backup"
         fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Record Labs backup (*.zip)", "zip")
     }
-    if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) onPicked(chooser.selectedFile)
+    if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) onPicked(com.recordlabs.desktop.platform.File.wrap(chooser.selectedFile))
 }
 
 actual fun lyricGlowShadow(color: androidx.compose.ui.graphics.Color, desktopBlurRadius: Float): androidx.compose.ui.graphics.Shadow =
     androidx.compose.ui.graphics.Shadow(color, blurRadius = desktopBlurRadius)
+
+internal actual fun platformUiFontFamily(): androidx.compose.ui.text.font.FontFamily? = null

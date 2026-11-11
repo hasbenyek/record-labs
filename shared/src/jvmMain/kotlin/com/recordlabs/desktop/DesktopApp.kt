@@ -687,7 +687,8 @@ actual fun Modifier.progressiveHeaderBlur(
     /** 0..1: how far the header has slid away (the top band shrinks with it). */
     headerHide: () -> Float,
 ): Modifier {
-    if (compact) return this
+    // Nothing to blur (liquid glass: no blur behind the header or the navigation).
+    if (compact || (footerHeight.value <= 0f && headerHeight.value <= 0f)) return this
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     // The bottom band depends on the page's height, so the effect is rebuilt
     // when that changes (kept here: [height, effect]).

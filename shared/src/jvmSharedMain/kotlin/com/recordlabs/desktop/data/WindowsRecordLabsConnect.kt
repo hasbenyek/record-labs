@@ -33,40 +33,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
-data class ConnectDevice(
-    val id: String,
-    val name: String,
-    val platform: String,
-    val lastSeenMs: Long,
-    val isPlaybackDevice: Boolean,
-    /** Heard only through the Connect relay (not on this network): "over the internet". */
-    val overInternet: Boolean = false,
-)
 
-data class WindowsConnectDiscoveryStatus(
-    val running: Boolean = false,
-    val listenerReady: Boolean = false,
-    val accountIdentityCount: Int = 0,
-    val ipv4InterfaceCount: Int = 0,
-    val sentPackets: Long = 0,
-    val receivedPackets: Long = 0,
-    val rejectedAccountPackets: Long = 0,
-    val lastError: String? = null,
-    /** The Connect relay (devices on other networks): "off", "connecting", "connected (n)" or why not. */
-    val relay: String = "off",
-)
 
-data class ConnectPlaybackState(
-    val ownerId: String,
-    val track: Track?,
-    val positionMs: Long,
-    val durationMs: Long,
-    val isPlaying: Boolean,
-    val sentAtMs: Long,
-    val queue: List<Track> = emptyList(),
-    val queueIndex: Int = 0,
-    val isReady: Boolean = false,
-)
 
 /**
  * Account-scoped, local-network transport for Record Labs Connect.
@@ -77,7 +45,7 @@ data class ConnectPlaybackState(
  * automatic on the same Wi-Fi while all playback still streams independently
  * from its normal provider (only state/control data crosses the LAN).
  */
-object WindowsRecordLabsConnect {
+actual object WindowsRecordLabsConnect {
     private const val GROUP = "239.255.42.99"
     private const val PORT = 45_922
 
@@ -242,6 +210,18 @@ object WindowsRecordLabsConnect {
 
     /** When each device was last heard on this network (not through the relay). */
     private val lanHeardAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    /**
+     * When each device last said, in its own messages ("hears"), which devices it hears
+     * on this network, and when that list last had this device in it. Hearing a device
+     * here does not mean it hears this one: a Wi-Fi router dropping the PC's broadcasts
+     * to phones, or WSA behind its own network, let the phone's messages reach the PC
+     * but not the PC's reach the phone. The PC then sent its states only over the
+     * network (the phone heard of it only through the relay's handoffs): the phone knew
+     * neither its name nor its position (the mirror drifted), took it for gone after a
+     * while, and a switch waited for answers that never came.
+     */
+    private val hearsReportAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val hearsUsAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
     @Volatile private var lastRelayQueueAt = 0L
     @Volatile private var lastRelayQueueSignature = 0
     /** The handoff request to a device on another network, repeated until it takes over (see [announce]). */
@@ -276,7 +256,7 @@ object WindowsRecordLabsConnect {
     private val debugFile: java.io.File? by lazy { runCatching { java.io.File(Platform.dataRoot, "connect-debug.log") }.getOrNull() }
     private val debugTime = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
 
-    fun debugLog(message: String) {
+    actual fun debugLog(message: String) {
         val line = synchronized(debugTime) { debugTime.format(java.util.Date()) } + " [${deviceName}] " + message
         println("RLConnect $line")
         runCatching {
@@ -300,7 +280,7 @@ object WindowsRecordLabsConnect {
     private fun peerName(id: String?): String = id?.let { synchronized(seen) { seen[it]?.name } ?: it.take(8) } ?: "-"
 
     /** Called by the app once its player is prepared, so a deferred takeover can run. */
-    fun notifyPlayerReady() {
+    actual fun notifyPlayerReady() {
         if (pendingTakeoverTerm == null) return
         handleExecutor.execute { completePendingTakeover(force = false) }
         // The player's "ready" can reach the app a moment after this call: checked again
@@ -377,25 +357,25 @@ object WindowsRecordLabsConnect {
     private val peerEndpoints = linkedMapOf<String, InetSocketAddress>()
     private val peerObservedEndpoints = linkedMapOf<String, InetSocketAddress>()
     private val _devices = MutableStateFlow<List<ConnectDevice>>(emptyList())
-    val devices: StateFlow<List<ConnectDevice>> = _devices.asStateFlow()
+    actual val devices: StateFlow<List<ConnectDevice>> = _devices.asStateFlow()
     private val sentPackets = AtomicLong(0)
     private val receivedPackets = AtomicLong(0)
     private val rejectedAccountPackets = AtomicLong(0)
     private val _discoveryStatus = MutableStateFlow(WindowsConnectDiscoveryStatus())
-    val discoveryStatus: StateFlow<WindowsConnectDiscoveryStatus> = _discoveryStatus.asStateFlow()
+    actual val discoveryStatus: StateFlow<WindowsConnectDiscoveryStatus> = _discoveryStatus.asStateFlow()
     private val _remoteOwnerId = MutableStateFlow<String?>(null)
-    val remoteOwnerId: StateFlow<String?> = _remoteOwnerId.asStateFlow()
-    val localDeviceId: String get() = localId
+    actual val remoteOwnerId: StateFlow<String?> = _remoteOwnerId.asStateFlow()
+    actual val localDeviceId: String get() = localId
 
-    fun start(
+    actual fun start(
         accountKeys: Collection<String>,
         deviceName: String,
         playbackProvider: () -> ConnectPlaybackState?,
         onRemoteState: (ConnectPlaybackState) -> Unit,
         onCommand: (String, Long?, Track?) -> Unit,
-        onLocalOwnership: ((handedTrackId: String?, handedPositionMs: Long?) -> Unit)? = null,
-        onTransferStalled: ((String) -> Unit)? = null,
-        onTakeoverPrepare: ((ConnectPlaybackState) -> Unit)? = null,
+        onLocalOwnership: ((handedTrackId: String?, handedPositionMs: Long?) -> Unit)?,
+        onTransferStalled: ((String) -> Unit)?,
+        onTakeoverPrepare: ((ConnectPlaybackState) -> Unit)?,
     ) {
         val fingerprints = accountKeys.map(String::trim).filter(String::isNotBlank)
             .map(::fingerprint).toSet()
@@ -459,10 +439,13 @@ object WindowsRecordLabsConnect {
         subnetScan = executor.scheduleAtFixedRate(::doSubnetScan, 6_000L, 30_000L, TimeUnit.MILLISECONDS)
     }
 
-    fun stop() {
+    actual fun stop() {
         running.set(false)
         ConnectRelay.stop()
         lanHeardAt.clear()
+        ownAddressCache.clear()
+        hearsReportAt.clear()
+        hearsUsAt.clear()
         heartbeat?.cancel(true)
         heartbeat = null
         subnetScan?.cancel(true)
@@ -491,7 +474,7 @@ object WindowsRecordLabsConnect {
         _discoveryStatus.value = _discoveryStatus.value.copy(running = false, listenerReady = false)
     }
 
-    fun takePlaybackOwnership(requestedTerm: Long? = null) = takePlaybackOwnership(requestedTerm, handoff = false)
+    actual fun takePlaybackOwnership(requestedTerm: Long?) = takePlaybackOwnership(requestedTerm, handoff = false)
 
     /**
      * A song started on this device. [userStarted] (it plays at once, picked by the
@@ -499,13 +482,13 @@ object WindowsRecordLabsConnect {
      * and follows this one (one output at a time, like Spotify Connect). A song only
      * loaded paused (restored at launch) never takes the sound from another device.
      */
-    fun takePlaybackOwnership(userStarted: Boolean) {
+    actual fun takePlaybackOwnership(userStarted: Boolean) {
         if (!running.get()) return
         handleExecutor.execute { takePlaybackOwnership(null, handoff = userStarted) }
     }
 
     /** Play pressed on this device while it is not following another one: it becomes the only output. */
-    fun claimForLocalPlay() {
+    actual fun claimForLocalPlay() {
         if (!running.get() || _remoteOwnerId.value != null) return
         handleExecutor.execute {
             if (_remoteOwnerId.value == null) takePlaybackOwnership(null, handoff = true)
@@ -544,7 +527,7 @@ object WindowsRecordLabsConnect {
         }.toString())
     }
 
-    fun selectPlaybackDevice(deviceId: String): Boolean {
+    actual fun selectPlaybackDevice(deviceId: String): Boolean {
         debugLog("picked ${if (deviceId == localId) "this device" else peerName(deviceId)} as output; current output ${peerName(_remoteOwnerId.value) .takeIf { _remoteOwnerId.value != null } ?: "this device"}")
         pickedHereFrom = null
         if (deviceId == localId) {
@@ -669,13 +652,13 @@ object WindowsRecordLabsConnect {
         }.toString())
     }
 
-    fun configureBluetooth(sender: ((String) -> Unit)?) {
+    actual fun configureBluetooth(sender: ((String) -> Unit)?) {
         bluetoothSender = sender
     }
 
-    fun receiveBluetooth(raw: String) = dispatch(raw, null, PORT)
+    actual fun receiveBluetooth(raw: String) { dispatch(raw, null, PORT) }
 
-    fun sendCommand(command: String, positionMs: Long? = null): Boolean {
+    actual fun sendCommand(command: String, positionMs: Long?): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -686,9 +669,9 @@ object WindowsRecordLabsConnect {
         return true
     }
 
-    fun hasRemotePlaybackDevice(): Boolean = _remoteOwnerId.value != null
+    actual fun hasRemotePlaybackDevice(): Boolean = _remoteOwnerId.value != null
 
-    fun sendPlayTrack(track: Track): Boolean {
+    actual fun sendPlayTrack(track: Track): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -699,13 +682,15 @@ object WindowsRecordLabsConnect {
             put("artist", track.artist)
             put("album", track.album)
             put("artwork", track.artworkUrl.orEmpty())
+            track.musicVideoType?.takeIf(String::isNotBlank)?.let { put("videoType", it) }
+            if (track.isOfficial) put("official", true)
             put("durationMs", track.durationMs)
         }.toString())
         return true
     }
 
     /** Adds a song immediately after the host's current queue item. */
-    fun sendQueueNext(track: Track): Boolean {
+    actual fun sendQueueNext(track: Track): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -716,6 +701,8 @@ object WindowsRecordLabsConnect {
             put("artist", track.artist)
             put("album", track.album)
             put("artwork", track.artworkUrl.orEmpty())
+            track.musicVideoType?.takeIf(String::isNotBlank)?.let { put("videoType", it) }
+            if (track.isOfficial) put("official", true)
             put("durationMs", track.durationMs)
         }.toString())
         return true
@@ -733,7 +720,7 @@ object WindowsRecordLabsConnect {
     }
 
     /** Reorders the active output queue using a stable track id. */
-    fun sendQueueMove(trackId: String, toIndex: Int): Boolean {
+    actual fun sendQueueMove(trackId: String, toIndex: Int): Boolean {
         val target = _remoteOwnerId.value ?: return false
         sendTo(target, buildJsonObject {
             envelope("command")
@@ -746,7 +733,7 @@ object WindowsRecordLabsConnect {
     }
 
     /** Acknowledges that this silent controller has prepared the host track. */
-    fun sendTrackReady(ownerId: String, trackId: String) {
+    actual fun sendTrackReady(ownerId: String, trackId: String) {
         if (ownerId.isBlank() || trackId.isBlank()) return
         sendTo(ownerId, buildJsonObject {
             envelope("command")
@@ -804,7 +791,10 @@ object WindowsRecordLabsConnect {
             val request = pendingTransferRequest
             val now = System.currentTimeMillis()
             val overInternet = synchronized(seen) { seen[target]?.overInternet == true }
-            if (request != null && overInternet && now - pendingTransferSince < TRANSFER_TIMEOUT_MS &&
+            // Repeated too when the target does not hear this device on this network (it
+            // says so, see hearsReportAt): a request lost there was never sent again, and
+            // the switch from the PC to the phone failed now and then.
+            if (request != null && (overInternet || !hearsThisDevice(target, now)) && now - pendingTransferSince < TRANSFER_TIMEOUT_MS &&
                 now - pendingTransferSentAt >= RELAY_TRANSFER_RETRY_MS
             ) {
                 pendingTransferSentAt = now
@@ -837,6 +827,8 @@ object WindowsRecordLabsConnect {
                 put("artist", state.track?.artist.orEmpty())
                 put("album", state.track?.album.orEmpty())
                 put("artwork", state.track?.artworkUrl.orEmpty())
+                state.track?.musicVideoType?.takeIf(String::isNotBlank)?.let { put("videoType", it) }
+                if (state.track?.isOfficial == true) put("official", true)
                 put("positionMs", state.positionMs)
                 put("durationMs", state.durationMs)
                 put("playing", state.isPlaying)
@@ -849,6 +841,8 @@ object WindowsRecordLabsConnect {
                             put("artist", track.artist)
                             put("album", track.album)
                             put("artwork", track.artworkUrl.orEmpty())
+                            track.musicVideoType?.takeIf(String::isNotBlank)?.let { put("videoType", it) }
+                            if (track.isOfficial) put("official", true)
                             put("durationMs", if (track.id == state.track?.id) state.durationMs else track.durationMs)
                         }
                     }))
@@ -926,6 +920,9 @@ object WindowsRecordLabsConnect {
         put("accounts", JsonArray(accountFingerprints.sorted().map(::JsonPrimitive)))
         put("device", localId)
         put("sentAt", System.currentTimeMillis())
+        // The devices heard on this network lately (see hearsReportAt).
+        val now = System.currentTimeMillis()
+        put("hears", JsonArray(lanHeardAt.entries.filter { now - it.value <= LAN_FRESH_MS }.map { JsonPrimitive(it.key) }))
     }
 
     /**
@@ -984,6 +981,8 @@ object WindowsRecordLabsConnect {
      */
     private fun ensureTcpLink(peerId: String, address: InetAddress) {
         if (!running.get() || tcpLinks.any { it.peerId == peerId }) return
+        // Never this device's own address (see TcpLink: it would only reach itself).
+        if (isOwnAddress(address)) return
         val now = System.currentTimeMillis()
         if (now - (tcpLastAttempt[peerId] ?: 0L) < TCP_RETRY_MS) return
         if (!tcpConnecting.add(peerId)) return
@@ -1001,6 +1000,16 @@ object WindowsRecordLabsConnect {
             } finally {
                 tcpConnecting.remove(peerId)
             }
+        }
+    }
+
+    private val ownAddressCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    private fun isOwnAddress(address: InetAddress): Boolean {
+        if (address.isLoopbackAddress || address.isAnyLocalAddress) return true
+        val key = address.hostAddress ?: return false
+        return ownAddressCache.getOrPut(key) {
+            runCatching { java.net.NetworkInterface.getByInetAddress(address) != null }.getOrDefault(false)
         }
     }
 
@@ -1131,12 +1140,24 @@ object WindowsRecordLabsConnect {
                     BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8)).use { reader ->
                         while (running.get() && !socket.isClosed) {
                             val line = reader.readLine() ?: break
-                            lastRxAt = System.currentTimeMillis()
                             if (line.isNotBlank()) {
                                 val candidateId = runCatching {
                                     json.parseToJsonElement(line).jsonObject["device"]
                                         ?.jsonPrimitive?.contentOrNull
                                 }.getOrNull()
+                                // A link to this device itself (WSA and some networks show the
+                                // phone's messages coming from this PC's own address): this PC
+                                // dialled itself, its own messages came back, the link looked
+                                // alive, and requests meant for the phone (a handoff) were sent
+                                // only there, to this PC. Closed as soon as that shows.
+                                if (candidateId == localId) {
+                                    debugLog("closing a Connect link that reached this device itself (${remoteHost.orEmpty()})")
+                                    return@execute
+                                }
+                                // Alive only when the device it is for answers on it.
+                                if (peerId == null || candidateId.isNullOrBlank() || candidateId == peerId) {
+                                    lastRxAt = System.currentTimeMillis()
+                                }
                                 handleExecutor.execute {
                                     handle(line, socket.inetAddress, TCP_PORT)
                                     if (peerId == null && !candidateId.isNullOrBlank() && synchronized(seen) { candidateId in seen }) {
@@ -1320,6 +1341,10 @@ object WindowsRecordLabsConnect {
         // Test mode: only the relay counts (see relayOnly).
         if (relayOnly && sourcePort != RELAY_PORT) return
         if (sourcePort != RELAY_PORT) lanHeardAt[sender] = now
+        (value["hears"] as? JsonArray)?.let { hears ->
+            hearsReportAt[sender] = now
+            if (hears.any { (it as? JsonPrimitive)?.contentOrNull == localId }) hearsUsAt[sender] = now
+        }
         val overInternet = sourcePort == RELAY_PORT && now - (lanHeardAt[sender] ?: 0L) > LAN_FRESH_MS
         val isNewPeer = synchronized(seen) {
             val newPeer = sender !in seen
@@ -1477,6 +1502,7 @@ object WindowsRecordLabsConnect {
                                 artist = value["artist"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                                 album = value["album"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                                 artworkUrl = value["artwork"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                                musicVideoType = value["videoType"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
                                 durationMs = value["durationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L,
                                 isOfficial = true,
                             )
@@ -1501,6 +1527,8 @@ object WindowsRecordLabsConnect {
                 artist = value["artist"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 album = value["album"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                 artworkUrl = value["artwork"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                musicVideoType = value["videoType"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                isOfficial = value["official"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                 durationMs = value["durationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L,
             )
         }
@@ -1514,6 +1542,8 @@ object WindowsRecordLabsConnect {
                     artist = item["artist"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     album = item["album"]?.jsonPrimitive?.contentOrNull.orEmpty(),
                     artworkUrl = item["artwork"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                    musicVideoType = item["videoType"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                    isOfficial = item["official"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                     durationMs = item["durationMs"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L,
                 )
             }
@@ -1538,6 +1568,8 @@ object WindowsRecordLabsConnect {
         put("artist", track.artist)
         put("album", track.album)
         put("artwork", track.artworkUrl.orEmpty())
+        track.musicVideoType?.takeIf(String::isNotBlank)?.let { put("videoType", it) }
+        if (track.isOfficial) put("official", true)
         put("positionMs", state.positionMs)
         put("durationMs", state.durationMs)
         put("playing", state.isPlaying)
@@ -1550,6 +1582,8 @@ object WindowsRecordLabsConnect {
                     put("artist", item.artist)
                     put("album", item.album)
                     put("artwork", item.artworkUrl.orEmpty())
+                    item.musicVideoType?.takeIf(String::isNotBlank)?.let { put("videoType", it) }
+                    if (item.isOfficial) put("official", true)
                     put("durationMs", if (item.id == track.id) state.durationMs else item.durationMs)
                 }
             }))
@@ -1657,6 +1691,16 @@ object WindowsRecordLabsConnect {
      * there is not heard on this network (another Wi-Fi, mobile data). Devices that
      * also get it here drop the second copy ([firstCopy]).
      */
+    /**
+     * Whether [peer] hears this device on this network: it says so in its messages
+     * ("hears"). A device that never says (an older version) is taken to hear it.
+     */
+    private fun hearsThisDevice(peer: String, now: Long): Boolean {
+        val reported = hearsReportAt[peer] ?: return true
+        if (now - reported > LAN_FRESH_MS * 3) return true
+        return now - (hearsUsAt[peer] ?: 0L) <= LAN_FRESH_MS * 2
+    }
+
     private fun relayIfNeeded(payload: String, important: Boolean, fallback: String) {
         val now = System.currentTimeMillis()
         val short = fallback.takeIf { it != payload }
@@ -1666,7 +1710,7 @@ object WindowsRecordLabsConnect {
         // phone asking the PC to hand the sound back was never answered, and the switch
         // waited ~8 s for the give-up. A copy arriving both ways is applied once.
         if (ConnectRelay.connected && (important && ConnectRelay.peers.isNotEmpty() ||
-                ConnectRelay.peers.any { now - (lanHeardAt[it] ?: 0L) > LAN_FRESH_MS })
+                ConnectRelay.peers.any { now - (lanHeardAt[it] ?: 0L) > LAN_FRESH_MS || !hearsThisDevice(it, now) })
         ) {
             ConnectRelay.send(payload, important = important, fallback = short)
             return

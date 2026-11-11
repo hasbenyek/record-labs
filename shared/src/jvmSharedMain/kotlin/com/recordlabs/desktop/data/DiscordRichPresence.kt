@@ -28,36 +28,9 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
-/** What is playing, as the app reports it to Discord about once a second. */
-data class DiscordPlayback(
-    val track: Track?,
-    val isPlaying: Boolean,
-    val positionMs: Long,
-    val durationMs: Long,
-    val speed: Float,
-)
 
-sealed interface DiscordConnectionState {
-    data object Off : DiscordConnectionState
-    data object Connecting : DiscordConnectionState
-    data object DiscordNotRunning : DiscordConnectionState
-    /** Android: not logged in to Discord in Record Labs yet. */
-    data object SignedOut : DiscordConnectionState
-    data class Connected(val userName: String?, val avatarUrl: String?) : DiscordConnectionState
-    data class Failed(val message: String) : DiscordConnectionState
-}
 
-/** The texts and pictures shown in Discord for a song (also used by the settings preview). */
-data class DiscordActivityContent(
-    val details: String,
-    val state: String,
-    val largeImage: String?,
-    val largeText: String?,
-    val buttonLabel: String?,
-    val buttonUrl: String?,
-    val startMs: Long?,
-    val endMs: Long?,
-)
+
 
 /**
  * Android: Rich Presence through Discord itself with the user's Discord login (there is
@@ -90,13 +63,13 @@ interface DiscordRemoteBackend {
  * [MIN_SEND_GAP_MS] (Discord allows about five per 20 s), always the latest
  * state, and reconnects by itself when Discord is started later.
  */
-object DiscordRichPresence {
+actual object DiscordRichPresence {
     const val APPLICATION_ID = "1525699798076887183"
     const val DEFAULT_DETAILS = DiscordDefaults.DETAILS
     const val DEFAULT_STATE = DiscordDefaults.STATE
     const val DEFAULT_BUTTON_LABEL = DiscordDefaults.BUTTON_LABEL
     const val DEFAULT_BUTTON_URL = DiscordDefaults.BUTTON_URL
-    val PLACEHOLDERS = listOf("{song.name}", "{artist.name}", "{album.name}", "{song.id}")
+    actual val PLACEHOLDERS: List<String> = listOf("{song.name}", "{artist.name}", "{album.name}", "{song.id}")
 
     private const val MIN_SEND_GAP_MS = 4_000L
     private const val PAUSE_CLEAR_MS = 60_000L
@@ -105,10 +78,10 @@ object DiscordRichPresence {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val _state = MutableStateFlow<DiscordConnectionState>(DiscordConnectionState.Off)
-    val state: StateFlow<DiscordConnectionState> = _state.asStateFlow()
+    actual val state: StateFlow<DiscordConnectionState> = _state.asStateFlow()
     private val _playback = MutableStateFlow<DiscordPlayback?>(null)
     /** The latest playback the app reported (for the settings preview). */
-    val playback: StateFlow<DiscordPlayback?> = _playback.asStateFlow()
+    actual val playback: StateFlow<DiscordPlayback?> = _playback.asStateFlow()
 
     private val latest = AtomicReference<DiscordPlayback?>(null)
     private val wake = Channel<Unit>(Channel.CONFLATED)
@@ -121,13 +94,13 @@ object DiscordRichPresence {
     @Volatile var remoteBackend: DiscordRemoteBackend? = null
 
     /** Android: whether Rich Presence needs a Discord login in Record Labs. */
-    val needsLogin: Boolean get() = remoteBackend != null
+    actual val needsLogin: Boolean get() = remoteBackend != null
 
-    fun login() = remoteBackend?.login()
+    actual fun login() { remoteBackend?.login() }
 
-    val loggedIn: Boolean get() = remoteBackend?.loggedIn == true
+    actual val loggedIn: Boolean get() = remoteBackend?.loggedIn == true
 
-    fun logout() {
+    actual fun logout() {
         remoteBackend?.logout()
         remoteChanged()
     }
@@ -139,7 +112,7 @@ object DiscordRichPresence {
         wake.trySend(Unit)
     }
 
-    fun report(playback: DiscordPlayback) {
+    actual fun report(playback: DiscordPlayback) {
         val previous = latest.getAndSet(playback)
         _playback.value = playback
         if (!AppSettings.discordEnabled.value && !started) return
@@ -152,7 +125,7 @@ object DiscordRichPresence {
     }
 
     /** Settings changed (on/off, templates): send again at once. */
-    fun settingsChanged() {
+    actual fun settingsChanged() {
         resendRequested = true
         // A fixed template or button may be accepted again in the full form.
         retryFullActivity = true
@@ -199,7 +172,7 @@ object DiscordRichPresence {
         return if (cut.length < 2) cut + "⠀" else cut
     }
 
-    fun content(playback: DiscordPlayback, nowMs: Long = System.currentTimeMillis()): DiscordActivityContent? {
+    actual fun content(playback: DiscordPlayback, nowMs: Long): DiscordActivityContent? {
         val track = playback.track ?: return null
         val advanced = AppSettings.discordAdvanced.value
         val detailsTemplate = if (advanced) AppSettings.discordDetailsTemplate.value.ifBlank { DEFAULT_DETAILS } else DEFAULT_DETAILS

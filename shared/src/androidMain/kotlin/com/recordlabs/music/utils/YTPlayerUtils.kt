@@ -422,6 +422,14 @@ object YTPlayerUtils {
                         }.getOrNull()
             }
 
+            // YouTube sometimes answers with another video's player; its stream would
+            // play a different song than the one picked (yt-dlp skips these too).
+            val answeredId = streamPlayerResponse?.videoDetails?.videoId
+            if (answeredId != null && answeredId != videoId) {
+                Timber.tag(TAG).w("Client ${client.clientName} answered for $answeredId instead of $videoId; skipped")
+                continue
+            }
+
             // process current client response
             if (streamPlayerResponse?.playabilityStatus?.status == "OK") {
                 Timber.tag(logTag).d("Player response status OK for client: ${client.clientName}")
